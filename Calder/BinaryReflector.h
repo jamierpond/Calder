@@ -17,6 +17,7 @@ using Miro::Mode;
 using Miro::Options;
 using Miro::OwningPointer;
 using Miro::PackedArrayRef;
+using Miro::PackedStructArrayRef;
 using Miro::PrimitiveRef;
 using Miro::Reflector;
 using Miro::Shape;
@@ -36,6 +37,7 @@ public:
 
     void visit(PrimitiveRef ref) override;
     bool visitPacked(PackedArrayRef ref) override;
+    bool visitPackedStructs(PackedStructArrayRef ref) override;
     void writeNull() override;
     ValueKind kind() const override { return ValueKind::Absent; }
 
@@ -125,6 +127,7 @@ public:
 
     void visit(PrimitiveRef ref) override;
     bool visitPacked(PackedArrayRef ref) override;
+    bool visitPackedStructs(PackedStructArrayRef ref) override;
     void writeNull() override {}
     ValueKind kind() const override;
     bool isIntegerNumber() const override;
@@ -141,6 +144,17 @@ private:
     using StepFromParent =
         std::variant<std::monostate, std::string_view, std::size_t>;
 
+    // A slot inside one record of a PackedStructArray, read as an object
+    // when the C++ element type is not packable. `pathDepth` segments of
+    // `prefixField`'s path lead here.
+    struct PackedRecordSlot
+    {
+        std::reference_wrapper<const Calder::Detail::StoredPackedLayout> layout;
+        std::size_t recordOffset = 0;
+        std::size_t pathDepth = 0;
+        std::size_t prefixField = 0;
+    };
+
     Reader(const Reader& parentToUse,
            StepFromParent stepToUse,
            const Calder::Detail::ValueHeader& headerToUse,
@@ -148,11 +162,20 @@ private:
 
     void restartSlot(StepFromParent stepToUse,
                      const Calder::Detail::ValueHeader& headerToUse,
-                     Options&& optsToUse);
+                     Options&& optsToUse,
+                     std::optional<PackedRecordSlot> packedRecordToUse);
 
     Reflector& spawnChild(StepFromParent step,
                           const Calder::Detail::ValueHeader& childHeader,
-                          Options&& childOpts);
+                          Options&& childOpts,
+                          std::optional<PackedRecordSlot> childPackedRecord = {});
+    Reflector& spawnPackedRecordChild(std::size_t index, Options&& childOpts);
+    Reflector& spawnPackedFieldChild(std::string_view key, Options&& childOpts);
+    std::optional<std::size_t>
+        findPackedFieldAtThisDepth(std::string_view key) const;
+    std::span<const std::string_view> getPackedRecordPrefix() const;
+    void appendPackedRecordKeys(Vector<std::string>& keys) const;
+    bool readStoredPackedLayoutOnce();
     Reflector& spawnMissingChild(StepFromParent step, Options&& childOpts);
     Reflector& spawnElementChild(std::size_t index,
                                  std::size_t elementOffset,
@@ -175,6 +198,11 @@ private:
 
     std::size_t resumeOffset = 0;
     std::size_t resumeElementIndex = 0;
+
+    std::optional<PackedRecordSlot> packedRecord;
+    Calder::Detail::StoredPackedLayout storedPackedLayout;
+    bool hasReadStoredPackedLayout = false;
+    bool isStoredPackedLayoutValid = false;
 
     OwningPointer<Reader> reusableChild;
 };

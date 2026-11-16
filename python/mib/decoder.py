@@ -21,7 +21,22 @@ FNV_PRIME = 0x01000193
 TAG_NULL, TAG_FALSE, TAG_TRUE, TAG_INT, TAG_DOUBLE, TAG_FLOAT32, TAG_STRING = range(7)
 TAG_OBJECT, TAG_MAP, TAG_ARRAY = 7, 8, 9
 TAG_PACKED_INT32, TAG_PACKED_INT64 = 12, 13
+TAG_PACKED_STRUCT_ARRAY = 18
 FRAME_KIND_SET, FRAME_KIND_REMOVE = 1, 2
+
+# Field type byte of a PackedStructArray field: struct format and width.
+PACKED_FIELD_FORMATS = {
+    0: ("b", 1),
+    1: ("B", 1),
+    2: ("h", 2),
+    3: ("H", 2),
+    4: ("i", 4),
+    5: ("I", 4),
+    6: ("q", 8),
+    7: ("Q", 8),
+    8: ("f", 4),
+    9: ("d", 8),
+}
 
 FIXED_WIDTH_PACKED_FORMATS = {
     10: ("f", 4),
@@ -149,6 +164,8 @@ def decode_value(reader, names, depth):
         return decode_packed_varints(reader)
     if tag in FIXED_WIDTH_PACKED_FORMATS:
         return decode_fixed_width_packed(reader, tag)
+    if tag == TAG_PACKED_STRUCT_ARRAY:
+        return decode_packed_struct_array(reader, names)
     raise MibError(tag_offset, f"unknown tag {tag}")
 
 
@@ -210,6 +227,64 @@ def decode_fixed_width_packed(reader, tag):
     count = reader.read_u32("packed array count")
     raw = reader.read_bytes(count * width, "packed array elements")
     return list(struct.unpack(f"<{count}{element_format}", raw))
+
+
+def read_packed_struct_field(payload, names):
+    path_offset = payload.offset
+    path_length = payload.read_varint("packed struct field path length")
+    if path_length == 0 or path_length > payload.limit - payload.offset:
+        raise MibError(path_offset, f"packed struct field path length {path_length} is invalid")
+    path = []
+    for _ in range(path_length):
+        id_offset = payload.offset
+        key_id = payload.read_varint("packed struct field key id")
+        if key_id >= len(names):
+            raise MibError(id_offset, f"key id {key_id} not in key table of {len(names)}")
+        path.append(names[key_id])
+    type_offset = payload.offset
+    field_type = payload.read_u8("packed struct field type")
+    if field_type not in PACKED_FIELD_FORMATS:
+        raise MibError(type_offset, f"unknown packed struct field type {field_type}")
+    return tuple(path), PACKED_FIELD_FORMATS[field_type]
+
+
+def check_packed_struct_paths(paths, offset):
+    leaves = set(paths)
+    if len(leaves) != len(paths):
+        raise MibError(offset, "packed struct layout names a field twice")
+    for path in paths:
+        for prefix_length in range(1, len(path)):
+            if path[:prefix_length] in leaves:
+                raise MibError(offset, f"packed struct field {'.'.join(path)} is inside a number")
+
+
+def store_at_path(record, path, value):
+    for segment in path[:-1]:
+        record = record.setdefault(segment, {})
+    record[path[-1]] = value
+
+
+def decode_packed_struct_array(reader, names):
+    payload = open_sized_container(reader, "PackedStructArray")
+    count = read_counted_elements(payload, "PackedStructArray")
+    layout_offset = payload.offset
+    field_count = payload.read_varint("packed struct field count")
+    if field_count == 0 or field_count > payload.limit - payload.offset:
+        raise MibError(layout_offset, f"packed struct field count {field_count} is invalid")
+    fields = [read_packed_struct_field(payload, names) for _ in range(field_count)]
+    check_packed_struct_paths([path for path, _ in fields], layout_offset)
+    record_format = "<" + "".join(element_format for _, (element_format, _) in fields)
+    record_size = sum(width for _, (_, width) in fields)
+    if count * record_size != payload.limit - payload.offset:
+        raise MibError(payload.offset, "PackedStructArray records do not fill its payload")
+    records = []
+    for values in struct.iter_unpack(record_format, payload.read_bytes(count * record_size, "records")):
+        record = {}
+        for (path, _), value in zip(fields, values):
+            store_at_path(record, path, value)
+        records.append(record)
+    finish_container(reader, payload, "PackedStructArray")
+    return records
 
 
 def fnv1a32(data):

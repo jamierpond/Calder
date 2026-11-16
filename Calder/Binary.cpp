@@ -1,6 +1,7 @@
 #include "Binary.h"
 
 #include <algorithm>
+#include <bit>
 
 namespace Calder
 {
@@ -44,7 +45,42 @@ constexpr std::array valueLayouts {
     ValueLayout {Tag::PackedUInt8, ValueCategory::Array, Encoding::UInt8},
     ValueLayout {Tag::PackedInt16, ValueCategory::Array, Encoding::Int16},
     ValueLayout {Tag::PackedUInt16, ValueCategory::Array, Encoding::UInt16},
+    ValueLayout {
+        Tag::PackedStructArray, ValueCategory::Array, Encoding::PackedStruct},
 };
+
+struct PackedFieldLayout
+{
+    PackedFieldType type;
+    Encoding encoding;
+};
+
+// Ordered by wire byte, like valueLayouts.
+constexpr std::array packedFieldLayouts {
+    PackedFieldLayout {PackedFieldType::Int8, Encoding::Int8},
+    PackedFieldLayout {PackedFieldType::UInt8, Encoding::UInt8},
+    PackedFieldLayout {PackedFieldType::Int16, Encoding::Int16},
+    PackedFieldLayout {PackedFieldType::UInt16, Encoding::UInt16},
+    PackedFieldLayout {PackedFieldType::Int32, Encoding::Int32},
+    PackedFieldLayout {PackedFieldType::UInt32, Encoding::UInt32},
+    PackedFieldLayout {PackedFieldType::Int64, Encoding::Int64},
+    PackedFieldLayout {PackedFieldType::UInt64, Encoding::UInt64},
+    PackedFieldLayout {PackedFieldType::Float32, Encoding::Float32},
+    PackedFieldLayout {PackedFieldType::Float64, Encoding::Float64},
+};
+
+constexpr bool arePackedFieldLayoutsInWireOrder()
+{
+    for (auto i = std::size_t {0}; i < packedFieldLayouts.size(); ++i)
+    {
+        if (static_cast<std::size_t>(packedFieldLayouts[i].type) != i)
+            return false;
+    }
+
+    return true;
+}
+
+static_assert(arePackedFieldLayoutsInWireOrder());
 
 constexpr bool areValueLayoutsInWireOrder()
 {
@@ -319,8 +355,17 @@ std::size_t getFixedByteWidth(Encoding encoding)
             return sizeof(std::int16_t);
         case Encoding::UInt16:
             return sizeof(std::uint16_t);
+        case Encoding::Int32:
+            return sizeof(std::int32_t);
+        case Encoding::UInt32:
+            return sizeof(std::uint32_t);
+        case Encoding::Int64:
+            return sizeof(std::int64_t);
+        case Encoding::UInt64:
+            return sizeof(std::uint64_t);
         case Encoding::Tagged:
         case Encoding::Zigzag:
+        case Encoding::PackedStruct:
             return 0;
     }
 
@@ -330,7 +375,7 @@ std::size_t getFixedByteWidth(Encoding encoding)
 bool isIntegerEncoding(Encoding encoding)
 {
     return encoding != Encoding::Tagged && encoding != Encoding::Float32
-           && encoding != Encoding::Float64;
+           && encoding != Encoding::Float64 && encoding != Encoding::PackedStruct;
 }
 
 Number readNumber(ByteReader& reader, Encoding encoding)
@@ -351,7 +396,17 @@ Number readNumber(ByteReader& reader, Encoding encoding)
             return std::int64_t {reader.readFixedWidth<std::int16_t>()};
         case Encoding::UInt16:
             return std::int64_t {reader.readFixedWidth<std::uint16_t>()};
+        case Encoding::Int32:
+            return std::int64_t {reader.readFixedWidth<std::int32_t>()};
+        case Encoding::UInt32:
+            return std::int64_t {reader.readFixedWidth<std::uint32_t>()};
+        case Encoding::Int64:
+            return reader.readFixedWidth<std::int64_t>();
+        case Encoding::UInt64:
+            return std::bit_cast<std::int64_t>(
+                reader.readFixedWidth<std::uint64_t>());
         case Encoding::Tagged:
+        case Encoding::PackedStruct:
             break;
     }
 
@@ -361,6 +416,14 @@ Number readNumber(ByteReader& reader, Encoding encoding)
 
 bool skipElements(ByteReader& reader, Encoding encoding, std::size_t count)
 {
+    // Records have no fixed width the encoding knows; callers that walk
+    // them read the stored layout instead.
+    if (encoding == Encoding::PackedStruct)
+    {
+        reader.hasReadEverythingInBounds = count == 0;
+        return reader.hasReadEverythingInBounds;
+    }
+
     if (auto width = getFixedByteWidth(encoding); width != 0)
     {
         reader.skip(count * width);
@@ -487,6 +550,100 @@ ValueHeader makePackedElementHeader(Encoding encoding, std::size_t elementOffset
     header.valueOffset = elementOffset;
     header.payloadOffset = elementOffset;
     return header;
+}
+
+std::optional<PackedFieldType> findPackedFieldType(std::uint8_t wireByte)
+{
+    if (wireByte >= packedFieldLayouts.size())
+        return std::nullopt;
+
+    return packedFieldLayouts[wireByte].type;
+}
+
+std::optional<PackedFieldType> findPackedFieldType(Encoding encoding)
+{
+    auto row = std::ranges::find(
+        packedFieldLayouts, encoding, &PackedFieldLayout::encoding);
+
+    if (row == packedFieldLayouts.end())
+        return std::nullopt;
+
+    return row->type;
+}
+
+Encoding getEncoding(PackedFieldType type)
+{
+    auto row = std::ranges::find(packedFieldLayouts, type, &PackedFieldLayout::type);
+    return row->encoding;
+}
+
+namespace
+{
+
+bool readStoredPackedField(const Document& document,
+                           ByteReader& reader,
+                           StoredPackedLayout& layout)
+{
+    auto pathLength = reader.readVarint();
+
+    // Each segment takes at least one byte, which bounds a corrupt length.
+    if (pathLength == 0 || pathLength > reader.bytesToRead.size())
+        return false;
+
+    auto field = StoredPackedField {.firstPathSegment = layout.pathSegments.size(),
+                                    .pathLength = pathLength};
+
+    for (auto i = std::uint64_t {0}; i < pathLength; ++i)
+    {
+        auto keyId = reader.readVarint();
+
+        if (!document.hasKeyId(keyId))
+            return false;
+
+        layout.pathSegments.push_back(document.getKeyName(keyId));
+    }
+
+    auto type = findPackedFieldType(reader.readByte());
+
+    if (!type || !reader.hasReadEverythingInBounds)
+        return false;
+
+    field.encoding = getEncoding(*type);
+    field.offsetInRecord = layout.recordSize;
+    layout.recordSize += getFixedByteWidth(field.encoding);
+    layout.fields.push_back(field);
+    return true;
+}
+
+} // namespace
+
+bool readStoredPackedLayout(const Document& document,
+                            const ValueHeader& header,
+                            StoredPackedLayout& layout)
+{
+    layout.fields.clear();
+    layout.pathSegments.clear();
+    layout.recordSize = 0;
+    layout.recordCount = 0;
+
+    auto reader = ByteReader {document.bytes().first(header.payloadEndOffset),
+                              header.payloadOffset};
+    auto fieldCount = reader.readVarint();
+
+    if (fieldCount == 0 || fieldCount > reader.bytesToRead.size())
+        return false;
+
+    for (auto i = std::uint64_t {0}; i < fieldCount; ++i)
+    {
+        if (!readStoredPackedField(document, reader, layout))
+            return false;
+    }
+
+    layout.recordsOffset = reader.readOffsetInBytes;
+    auto recordBytes = header.payloadEndOffset - layout.recordsOffset;
+    layout.recordCount =
+        std::min(header.elementCount, recordBytes / layout.recordSize);
+    return true;
 }
 
 ObjectEntryCursor::ObjectEntryCursor(const Document& documentToUse,

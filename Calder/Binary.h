@@ -37,6 +37,11 @@
 //   PackedInt64  u32 payloadSize | u32 count | zigzag varints
 //   PackedInt8, PackedUInt8, PackedInt16, PackedUInt16
 //                u32 count | count * 1 or 2 raw bytes
+//   PackedStructArray
+//                u32 payloadSize | u32 count | varint fieldCount
+//                | { varint pathLength | varint keyId * pathLength
+//                    | u8 fieldType }* | count * record
+//                record: each field's fixed-width bytes in field order
 //
 // payloadSize counts the bytes after the size field itself.
 //
@@ -103,6 +108,22 @@ enum class Tag : std::uint8_t
     PackedUInt8 = 15,
     PackedInt16 = 16,
     PackedUInt16 = 17,
+    PackedStructArray = 18,
+};
+
+// The number type of one field of a PackedStructArray, as stored.
+enum class PackedFieldType : std::uint8_t
+{
+    Int8 = 0,
+    UInt8 = 1,
+    Int16 = 2,
+    UInt16 = 3,
+    Int32 = 4,
+    UInt32 = 5,
+    Int64 = 6,
+    UInt64 = 7,
+    Float32 = 8,
+    Float64 = 9,
 };
 
 inline constexpr auto npos = static_cast<std::size_t>(-1);
@@ -434,6 +455,13 @@ enum class Encoding : std::uint8_t
     UInt8,
     Int16,
     UInt16,
+    Int32,
+    UInt32,
+    Int64,
+    UInt64,
+
+    // Elements are records of a PackedStructArray; see StoredPackedLayout.
+    PackedStruct,
 };
 
 using Number = std::variant<std::int64_t, double>;
@@ -467,6 +495,42 @@ struct ValueHeader
 
 ValueHeader parseValueHeader(std::span<const std::uint8_t> data,
                              std::size_t valueOffset);
+
+// One field of a PackedStructArray's stored layout. The path names are
+// views into the document's key table.
+struct StoredPackedField
+{
+    std::size_t firstPathSegment = 0;
+    std::size_t pathLength = 0;
+    Encoding encoding = Encoding::Float32;
+    std::size_t offsetInRecord = 0;
+};
+
+// The layout a PackedStructArray stores once, ahead of its records.
+struct StoredPackedLayout
+{
+    std::span<const std::string_view> getPath(const StoredPackedField& field) const
+    {
+        return std::span {pathSegments}.subspan(field.firstPathSegment,
+                                                field.pathLength);
+    }
+
+    std::vector<StoredPackedField> fields;
+    std::vector<std::string_view> pathSegments;
+    std::size_t recordSize = 0;
+    std::size_t recordsOffset = 0;
+    std::size_t recordCount = 0;
+};
+
+// Fills `layout` (reusing its storage) from a PackedStructArray header.
+// False when the layout is malformed or names a key the table lacks.
+bool readStoredPackedLayout(const Document& document,
+                            const ValueHeader& header,
+                            StoredPackedLayout& layout);
+
+std::optional<PackedFieldType> findPackedFieldType(std::uint8_t wireByte);
+std::optional<PackedFieldType> findPackedFieldType(Encoding encoding);
+Encoding getEncoding(PackedFieldType type);
 
 // A packed array element has no tag; it reads as a number at `elementOffset`.
 ValueHeader makePackedElementHeader(Encoding encoding, std::size_t elementOffset);
@@ -524,6 +588,8 @@ public:
     View root() const;
 
     std::size_t getKeyCount() const { return getKeyNames().size(); }
+
+    bool hasKeyId(std::uint64_t id) const { return id < getKeyNames().size(); }
 
     std::string_view getKeyName(std::uint64_t id) const
     {

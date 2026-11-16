@@ -10,13 +10,13 @@ endif ()
 
 include(cmake/CPM.cmake)
 
-# jamierpond/Miro jp/reflector-hooks: visitPacked, NumericConvert.h, and
-# missing containers keep their defaults on load.
+# jamierpond/Miro jp/packed-structs-on-hooks: visitPacked, NumericConvert.h,
+# missing containers keep their defaults on load, and packed struct arrays.
 if (NOT TARGET Miro)
     CPMAddPackage(
             NAME Miro
             GITHUB_REPOSITORY jamierpond/Miro
-            GIT_TAG e10294430ba132a6556b9a6c8d841cec7e2e3cfe)
+            GIT_TAG 46a67e208fcfed073c6752078cad1a3250b512d7)
 endif ()
 
 add_library(calder STATIC

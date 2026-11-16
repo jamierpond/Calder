@@ -1,0 +1,703 @@
+#include "Binary.h"
+
+#include <algorithm>
+
+namespace Calder
+{
+namespace
+{
+
+using Detail::ByteReader;
+using Detail::Encoding;
+using Detail::ValueCategory;
+using Detail::ValueHeader;
+
+constexpr auto frameOverhead =
+    sizeof(FrameKind) + sizeof(std::uint32_t) + sizeof(std::uint32_t);
+
+constexpr std::array frameKinds {FrameKind::Set, FrameKind::Remove};
+
+struct ValueLayout
+{
+    Tag tag;
+    ValueCategory category;
+    Encoding encoding;
+};
+
+// Ordered by wire byte, so the byte read from the buffer finds its row.
+constexpr std::array valueLayouts {
+    ValueLayout {Tag::Null, ValueCategory::Null, Encoding::Tagged},
+    ValueLayout {Tag::False, ValueCategory::Bool, Encoding::Tagged},
+    ValueLayout {Tag::True, ValueCategory::Bool, Encoding::Tagged},
+    ValueLayout {Tag::Int, ValueCategory::Number, Encoding::Zigzag},
+    ValueLayout {Tag::Double, ValueCategory::Number, Encoding::Float64},
+    ValueLayout {Tag::Float32, ValueCategory::Number, Encoding::Float32},
+    ValueLayout {Tag::String, ValueCategory::String, Encoding::Tagged},
+    ValueLayout {Tag::Object, ValueCategory::Object, Encoding::Tagged},
+    ValueLayout {Tag::Map, ValueCategory::Object, Encoding::Tagged},
+    ValueLayout {Tag::Array, ValueCategory::Array, Encoding::Tagged},
+    ValueLayout {Tag::PackedFloat, ValueCategory::Array, Encoding::Float32},
+    ValueLayout {Tag::PackedDouble, ValueCategory::Array, Encoding::Float64},
+    ValueLayout {Tag::PackedInt32, ValueCategory::Array, Encoding::Zigzag},
+    ValueLayout {Tag::PackedInt64, ValueCategory::Array, Encoding::Zigzag},
+    ValueLayout {Tag::PackedInt8, ValueCategory::Array, Encoding::Int8},
+    ValueLayout {Tag::PackedUInt8, ValueCategory::Array, Encoding::UInt8},
+    ValueLayout {Tag::PackedInt16, ValueCategory::Array, Encoding::Int16},
+    ValueLayout {Tag::PackedUInt16, ValueCategory::Array, Encoding::UInt16},
+};
+
+constexpr bool areValueLayoutsInWireOrder()
+{
+    for (auto i = std::size_t {0}; i < valueLayouts.size(); ++i)
+    {
+        if (static_cast<std::size_t>(valueLayouts[i].tag) != i)
+            return false;
+    }
+
+    return true;
+}
+
+static_assert(areValueLayoutsInWireOrder());
+
+std::optional<ValueLayout> findValueLayout(std::uint8_t wireByte)
+{
+    if (wireByte >= valueLayouts.size())
+        return std::nullopt;
+
+    return valueLayouts[wireByte];
+}
+
+std::uint32_t calculateFnv1aChecksum(std::span<const std::uint8_t> data)
+{
+    constexpr auto offsetBasis = std::uint32_t {2166136261U};
+    constexpr auto prime = std::uint32_t {16777619U};
+    auto hash = offsetBasis;
+
+    for (auto byte: data)
+    {
+        hash ^= byte;
+        hash *= prime;
+    }
+
+    return hash;
+}
+
+void appendBytes(Buffer& out, std::span<const std::uint8_t> bytes)
+{
+    out.insert(out.end(), bytes.begin(), bytes.end());
+}
+
+void appendU32(Buffer& out, std::uint32_t value)
+{
+    appendBytes(out, Detail::encodeLittleEndian(value));
+}
+
+void appendVarint(Buffer& out, std::uint64_t value)
+{
+    while (value >= varintContinuationBit)
+    {
+        out.push_back(static_cast<std::uint8_t>(value) | varintContinuationBit);
+        value >>= varintBitsPerByte;
+    }
+
+    out.push_back(static_cast<std::uint8_t>(value));
+}
+
+std::span<const std::uint8_t> viewAsBytes(std::string_view text)
+{
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(text.data());
+    return {bytes, text.size()};
+}
+
+bool isFrameKind(std::uint8_t byte)
+{
+    return std::ranges::any_of(frameKinds,
+                               [byte](FrameKind kind)
+                               { return static_cast<std::uint8_t>(kind) == byte; });
+}
+
+// The frame's size from its length field, if its header is complete and
+// the declared payload lies inside the journal.
+std::optional<std::size_t> readFrameSize(std::span<const std::uint8_t> data,
+                                         std::size_t frameOffset)
+{
+    if (data.size() - frameOffset < frameOverhead)
+        return std::nullopt;
+
+    auto reader = ByteReader {data, frameOffset + sizeof(FrameKind)};
+    auto payloadSize = std::size_t {reader.readU32()};
+
+    if (payloadSize > data.size() - frameOffset - frameOverhead)
+        return std::nullopt;
+
+    return frameOverhead + payloadSize;
+}
+
+// Reads a frame already known to fit; nullopt if its kind, checksum or
+// key is corrupt.
+std::optional<JournalFrame> decodeFrameAt(std::span<const std::uint8_t> data,
+                                          std::size_t frameOffset)
+{
+    auto reader = ByteReader {data, frameOffset};
+    auto kindByte = reader.readByte();
+    auto payload = reader.readBytes(reader.readU32());
+
+    if (!isFrameKind(kindByte)
+        || reader.readU32() != calculateFnv1aChecksum(payload))
+        return std::nullopt;
+
+    auto payloadReader = ByteReader {payload};
+    auto key = payloadReader.readString(payloadReader.readVarint());
+
+    if (!payloadReader.hasReadEverythingInBounds)
+        return std::nullopt;
+
+    auto kind = static_cast<FrameKind>(kindByte);
+    auto value = payload.subspan(payloadReader.readOffsetInBytes);
+    return JournalFrame {kind, key, value};
+}
+
+std::optional<std::size_t> readJournalBaseSize(std::span<const std::uint8_t> data)
+{
+    if (!isJournal(data))
+        return std::nullopt;
+
+    auto reader = ByteReader {data, headerFieldOffset};
+    auto baseSize = std::size_t {reader.readU32()};
+
+    if (!reader.hasReadEverythingInBounds || baseSize > data.size() - headerSize)
+        return std::nullopt;
+
+    return baseSize;
+}
+
+template <typename FrameVisitor>
+JournalInfo walkJournal(std::span<const std::uint8_t> data,
+                        FrameVisitor&& visitFrame)
+{
+    auto journalInfo = JournalInfo {};
+    auto baseSize = readJournalBaseSize(data);
+
+    if (!baseSize)
+        return journalInfo;
+
+    journalInfo.valid = true;
+    journalInfo.baseSize = *baseSize;
+
+    for (auto frameOffset = headerSize + *baseSize; frameOffset < data.size();)
+    {
+        auto frameSize = readFrameSize(data, frameOffset);
+
+        if (!frameSize)
+        {
+            journalInfo.truncated = true;
+            break;
+        }
+
+        if (auto frame = decodeFrameAt(data, frameOffset))
+            visitFrame(*frame);
+        else
+            ++journalInfo.skippedFrameCount;
+
+        frameOffset += *frameSize;
+        journalInfo.frameBytes += *frameSize;
+    }
+
+    return journalInfo;
+}
+
+void readArrayHeader(ByteReader& reader, ValueHeader& header)
+{
+    auto dataSize = reader.bytesToRead.size();
+
+    if (auto width = Detail::getFixedByteWidth(header.encoding); width != 0)
+    {
+        header.elementCount = reader.readU32();
+        header.payloadOffset = reader.readOffsetInBytes;
+        auto available = dataSize > reader.readOffsetInBytes
+                             ? dataSize - reader.readOffsetInBytes
+                             : 0;
+        header.elementCount = std::min(header.elementCount, available / width);
+        header.payloadEndOffset = header.payloadOffset + header.elementCount * width;
+        return;
+    }
+
+    auto size = reader.readU32();
+    header.payloadEndOffset = std::min(reader.readOffsetInBytes + size, dataSize);
+    header.elementCount = reader.readU32();
+    header.payloadOffset = reader.readOffsetInBytes;
+
+    // Every element takes at least one byte, which bounds a corrupt count.
+    auto payloadBytes = header.payloadEndOffset > header.payloadOffset
+                            ? header.payloadEndOffset - header.payloadOffset
+                            : 0;
+    header.elementCount = std::min(header.elementCount, payloadBytes);
+}
+
+} // namespace
+
+JournalInfo inspectJournal(std::span<const std::uint8_t> data)
+{
+    return walkJournal(data, [](const JournalFrame&) {});
+}
+
+std::vector<JournalFrame> readJournalFrames(std::span<const std::uint8_t> data)
+{
+    auto frames = std::vector<JournalFrame> {};
+    walkJournal(data,
+                [&frames](const JournalFrame& frame) { frames.push_back(frame); });
+    return frames;
+}
+
+Buffer makeJournal(std::span<const std::uint8_t> baseDoc)
+{
+    auto out = Buffer {};
+    out.reserve(headerSize + baseDoc.size());
+    appendBytes(out, journalMagic);
+    appendU32(out, Detail::convertToStoredSize(baseDoc.size()));
+    appendBytes(out, baseDoc);
+    return out;
+}
+
+InternedKeyTable readJournalKeyTable(std::span<const std::uint8_t> journal)
+{
+    auto baseSize = readJournalBaseSize(journal);
+
+    if (!baseSize)
+        return {};
+
+    auto base = Document {journal.subspan(headerSize, *baseSize)};
+    auto keyTable = InternedKeyTable {};
+
+    for (auto id = std::size_t {0}; id < base.getKeyCount(); ++id)
+        keyTable.getInternedKeyId(base.getKeyName(id));
+
+    // A base naming one key twice would shift every later id. With an empty
+    // table every write that names a field compacts instead.
+    if (keyTable.getKeyCount() != base.getKeyCount())
+        return {};
+
+    return keyTable;
+}
+
+Buffer makeFrame(FrameKind kind,
+                 std::string_view key,
+                 std::span<const std::uint8_t> frameValue)
+{
+    constexpr auto keyLengthReserve = std::size_t {4};
+    auto payload = Buffer {};
+    payload.reserve(key.size() + frameValue.size() + keyLengthReserve);
+    appendVarint(payload, key.size());
+    appendBytes(payload, viewAsBytes(key));
+    appendBytes(payload, frameValue);
+
+    auto out = Buffer {};
+    out.reserve(frameOverhead + payload.size());
+    out.push_back(static_cast<std::uint8_t>(kind));
+    appendU32(out, Detail::convertToStoredSize(payload.size()));
+    appendBytes(out, payload);
+    appendU32(out, calculateFnv1aChecksum(payload));
+    return out;
+}
+
+namespace Detail
+{
+
+std::size_t getFixedByteWidth(Encoding encoding)
+{
+    switch (encoding)
+    {
+        case Encoding::Float32:
+            return sizeof(float);
+        case Encoding::Float64:
+            return sizeof(double);
+        case Encoding::Int8:
+            return sizeof(std::int8_t);
+        case Encoding::UInt8:
+            return sizeof(std::uint8_t);
+        case Encoding::Int16:
+            return sizeof(std::int16_t);
+        case Encoding::UInt16:
+            return sizeof(std::uint16_t);
+        case Encoding::Tagged:
+        case Encoding::Zigzag:
+            return 0;
+    }
+
+    return 0;
+}
+
+bool isIntegerEncoding(Encoding encoding)
+{
+    return encoding != Encoding::Tagged && encoding != Encoding::Float32
+           && encoding != Encoding::Float64;
+}
+
+Number readNumber(ByteReader& reader, Encoding encoding)
+{
+    switch (encoding)
+    {
+        case Encoding::Zigzag:
+            return reader.readZigzag();
+        case Encoding::Float32:
+            return static_cast<double>(reader.readFixedWidth<float>());
+        case Encoding::Float64:
+            return reader.readFixedWidth<double>();
+        case Encoding::Int8:
+            return std::int64_t {reader.readFixedWidth<std::int8_t>()};
+        case Encoding::UInt8:
+            return std::int64_t {reader.readFixedWidth<std::uint8_t>()};
+        case Encoding::Int16:
+            return std::int64_t {reader.readFixedWidth<std::int16_t>()};
+        case Encoding::UInt16:
+            return std::int64_t {reader.readFixedWidth<std::uint16_t>()};
+        case Encoding::Tagged:
+            break;
+    }
+
+    reader.hasReadEverythingInBounds = false;
+    return std::int64_t {0};
+}
+
+bool skipElements(ByteReader& reader, Encoding encoding, std::size_t count)
+{
+    if (auto width = getFixedByteWidth(encoding); width != 0)
+    {
+        reader.skip(count * width);
+        return reader.hasReadEverythingInBounds;
+    }
+
+    for (auto i = std::size_t {0}; i < count && reader.hasReadEverythingInBounds;
+         ++i)
+    {
+        if (encoding == Encoding::Tagged)
+            skipValue(reader);
+        else
+            reader.readVarint();
+    }
+
+    return reader.hasReadEverythingInBounds;
+}
+
+namespace
+{
+
+// Packed float arrays store an element count; every other array stores
+// its payload size.
+void skipArrayPayload(ByteReader& reader, Encoding encoding)
+{
+    auto width = std::max(getFixedByteWidth(encoding), std::size_t {1});
+    reader.skip(std::size_t {reader.readU32()} * width);
+}
+
+} // namespace
+
+bool skipValue(ByteReader& reader)
+{
+    auto layout = findValueLayout(reader.readByte());
+
+    if (!layout)
+    {
+        reader.hasReadEverythingInBounds = false;
+        return false;
+    }
+
+    switch (layout->category)
+    {
+        case ValueCategory::Number:
+            return skipElements(reader, layout->encoding, 1);
+
+        case ValueCategory::String:
+            reader.skip(reader.readVarint());
+            break;
+
+        case ValueCategory::Object:
+            reader.skip(reader.readU32());
+            break;
+
+        case ValueCategory::Array:
+            skipArrayPayload(reader, layout->encoding);
+            break;
+
+        case ValueCategory::Null:
+        case ValueCategory::Bool:
+            break;
+    }
+
+    return reader.hasReadEverythingInBounds;
+}
+
+ValueHeader parseValueHeader(std::span<const std::uint8_t> data,
+                             std::size_t valueOffset)
+{
+    auto header = ValueHeader {};
+    auto reader = ByteReader {data, valueOffset};
+    auto layout = findValueLayout(reader.readByte());
+
+    if (!reader.hasReadEverythingInBounds || !layout)
+        return header;
+
+    header.tag = layout->tag;
+    header.category = layout->category;
+    header.encoding = layout->encoding;
+    header.valueOffset = valueOffset;
+    header.payloadOffset = reader.readOffsetInBytes;
+    header.payloadEndOffset = data.size();
+
+    if (header.category == ValueCategory::Object)
+    {
+        auto size = reader.readU32();
+        header.payloadOffset = reader.readOffsetInBytes;
+        header.payloadEndOffset =
+            std::min(reader.readOffsetInBytes + size, data.size());
+    }
+    else if (header.category == ValueCategory::Array)
+    {
+        readArrayHeader(reader, header);
+    }
+
+    header.valid = reader.hasReadEverythingInBounds;
+    return header;
+}
+
+namespace
+{
+
+// The tag a packed element would carry if it were stored on its own.
+Tag getNumberTag(Encoding encoding)
+{
+    if (encoding == Encoding::Float32)
+        return Tag::Float32;
+
+    if (encoding == Encoding::Float64)
+        return Tag::Double;
+
+    return Tag::Int;
+}
+
+} // namespace
+
+ValueHeader makePackedElementHeader(Encoding encoding, std::size_t elementOffset)
+{
+    auto header = ValueHeader {};
+    header.tag = getNumberTag(encoding);
+    header.category = ValueCategory::Number;
+    header.encoding = encoding;
+    header.valid = true;
+    header.valueOffset = elementOffset;
+    header.payloadOffset = elementOffset;
+    return header;
+}
+
+ObjectEntryCursor::ObjectEntryCursor(const Document& documentToUse,
+                                     const ValueHeader& container,
+                                     std::size_t fromOffset,
+                                     std::size_t untilOffset)
+    : document(documentToUse)
+    , reader(documentToUse.bytes(), fromOffset)
+    , endOffset(untilOffset)
+    , hasInlineKeys(container.tag == Tag::Map)
+{
+}
+
+std::string_view ObjectEntryCursor::readKey()
+{
+    if (hasInlineKeys)
+        return reader.readString(reader.readVarint());
+
+    return document.getKeyName(reader.readVarint());
+}
+
+std::optional<ObjectEntry> ObjectEntryCursor::readNextEntry()
+{
+    if (!reader.hasReadEverythingInBounds || reader.readOffsetInBytes >= endOffset)
+        return std::nullopt;
+
+    auto key = readKey();
+    auto valueOffset = reader.readOffsetInBytes;
+
+    if (!skipValue(reader))
+        return std::nullopt;
+
+    return ObjectEntry {key, valueOffset, reader.readOffsetInBytes};
+}
+
+std::optional<ObjectEntry> ObjectEntryCursor::findEntryWithKey(std::string_view key)
+{
+    while (auto entry = readNextEntry())
+    {
+        if (entry->key == key)
+            return entry;
+    }
+
+    return std::nullopt;
+}
+
+} // namespace Detail
+
+Document::Document(std::span<const std::uint8_t> dataToUse)
+    : data(dataToUse)
+{
+    if (!isDocument(data) || data.size() < headerSize)
+        return;
+
+    auto tableOffset = std::size_t {ByteReader {data, headerFieldOffset}.readU32()};
+
+    if (tableOffset < headerSize || tableOffset > data.size())
+        return;
+
+    valid = readKeyTable(tableOffset);
+}
+
+Document::Document(std::span<const std::uint8_t> frameValueToUse,
+                   const Document& baseDocumentToUse)
+    : data(frameValueToUse)
+    , rootValueOffset(0)
+    , baseDocumentKeyNames(baseDocumentToUse.getKeyNames())
+    , valid(baseDocumentToUse.isValid()
+            && Detail::parseValueHeader(frameValueToUse, 0).valid)
+{
+}
+
+bool Document::readKeyTable(std::size_t tableOffset)
+{
+    auto reader = ByteReader {data, tableOffset};
+    auto count = reader.readVarint();
+
+    // Each key takes at least its length byte, which bounds a corrupt count.
+    if (count > data.size() - std::min(reader.readOffsetInBytes, data.size()))
+        return false;
+
+    keyNamesById.reserve(count);
+
+    for (auto id = std::uint32_t {0}; id < count; ++id)
+    {
+        auto name = reader.readString(reader.readVarint());
+
+        if (!reader.hasReadEverythingInBounds)
+            return false;
+
+        keyNamesById.push_back(name);
+    }
+
+    return true;
+}
+
+View Document::root() const
+{
+    if (!valid)
+        return {};
+
+    return View {*this, rootValueOffset};
+}
+
+View::View(const Document& documentToUse, std::size_t valueOffsetToUse)
+    : document(&documentToUse)
+    , header(Detail::parseValueHeader(documentToUse.bytes(), valueOffsetToUse))
+{
+}
+
+View::View(const Document& documentToUse, const Detail::ValueHeader& headerToUse)
+    : document(&documentToUse)
+    , header(headerToUse)
+{
+}
+
+View View::operator[](std::string_view key) const
+{
+    if (!hasCategory(ValueCategory::Object))
+        return {};
+
+    auto cursor = Detail::ObjectEntryCursor {
+        *document, header, header.payloadOffset, header.payloadEndOffset};
+    auto entry = cursor.findEntryWithKey(key);
+
+    if (!entry)
+        return {};
+
+    return View {*document, entry->valueOffset};
+}
+
+View View::operator[](std::size_t index) const
+{
+    if (!hasCategory(ValueCategory::Array) || index >= header.elementCount)
+        return {};
+
+    auto reader = ByteReader {document->bytes(), header.payloadOffset};
+
+    if (!Detail::skipElements(reader, header.encoding, index)
+        || reader.readOffsetInBytes >= header.payloadEndOffset)
+        return {};
+
+    if (header.encoding == Encoding::Tagged)
+        return View {*document, reader.readOffsetInBytes};
+
+    return View {
+        *document,
+        Detail::makePackedElementHeader(header.encoding, reader.readOffsetInBytes)};
+}
+
+std::size_t View::size() const
+{
+    if (hasCategory(ValueCategory::Array))
+        return header.elementCount;
+
+    if (!hasCategory(ValueCategory::Object))
+        return 0;
+
+    auto cursor = Detail::ObjectEntryCursor {
+        *document, header, header.payloadOffset, header.payloadEndOffset};
+    auto count = std::size_t {0};
+
+    while (cursor.readNextEntry())
+        ++count;
+
+    return count;
+}
+
+std::optional<Detail::Number> View::readNumber() const
+{
+    if (!hasCategory(ValueCategory::Number))
+        return std::nullopt;
+
+    auto reader = ByteReader {document->bytes(), header.payloadOffset};
+    auto number = Detail::readNumber(reader, header.encoding);
+
+    if (!reader.hasReadEverythingInBounds)
+        return std::nullopt;
+
+    return number;
+}
+
+std::int64_t View::asInt(std::int64_t fallback) const
+{
+    auto number = readNumber();
+
+    if (!number)
+        return fallback;
+
+    return std::visit([](auto value) { return static_cast<std::int64_t>(value); },
+                      *number);
+}
+
+double View::asNumber(double fallback) const
+{
+    auto number = readNumber();
+
+    if (!number)
+        return fallback;
+
+    return std::visit([](auto value) { return static_cast<double>(value); },
+                      *number);
+}
+
+std::string_view View::asString() const
+{
+    if (!hasCategory(ValueCategory::String))
+        return {};
+
+    auto reader = ByteReader {document->bytes(), header.payloadOffset};
+    return reader.readString(reader.readVarint());
+}
+
+} // namespace Calder

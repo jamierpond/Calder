@@ -234,25 +234,6 @@ void appendFieldPathStep(std::string& path, std::size_t index)
 void appendFieldPathStep(std::string&, std::monostate) {}
 
 template <typename T>
-bool canCopyRawBytes(Encoding encoding)
-{
-    if constexpr (std::same_as<T, float>)
-        return encoding == Encoding::Float32;
-    else if constexpr (std::same_as<T, double>)
-        return encoding == Encoding::Float64;
-    else if constexpr (std::same_as<T, std::int8_t>)
-        return encoding == Encoding::Int8;
-    else if constexpr (std::same_as<T, std::uint8_t>)
-        return encoding == Encoding::UInt8;
-    else if constexpr (std::same_as<T, std::int16_t>)
-        return encoding == Encoding::Int16;
-    else if constexpr (std::same_as<T, std::uint16_t>)
-        return encoding == Encoding::UInt16;
-    else
-        return false;
-}
-
-template <typename T>
 void convertPackedElement(const Calder::Detail::Number& number, T& element)
 {
     if constexpr (std::same_as<T, std::uint64_t>)
@@ -265,6 +246,264 @@ void convertPackedElement(const Calder::Detail::Number& number, T& element)
     }
 
     convertDecodedNumber(number, element);
+}
+
+// The encoding whose bytes are exactly this C++ number type's,
+// little-endian.
+template <typename T>
+constexpr Encoding getFixedWidthEncoding()
+{
+    if constexpr (std::same_as<T, float>)
+        return Encoding::Float32;
+    else if constexpr (std::same_as<T, double>)
+        return Encoding::Float64;
+    else if constexpr (std::same_as<T, std::int8_t>)
+        return Encoding::Int8;
+    else if constexpr (std::same_as<T, std::uint8_t>)
+        return Encoding::UInt8;
+    else if constexpr (std::same_as<T, std::int16_t>)
+        return Encoding::Int16;
+    else if constexpr (std::same_as<T, std::uint16_t>)
+        return Encoding::UInt16;
+    else if constexpr (std::same_as<T, std::int32_t>)
+        return Encoding::Int32;
+    else if constexpr (std::same_as<T, std::uint32_t>)
+        return Encoding::UInt32;
+    else if constexpr (std::same_as<T, std::int64_t>)
+        return Encoding::Int64;
+    else
+        return Encoding::UInt64;
+}
+
+template <typename T>
+bool canCopyRawBytes(Encoding encoding)
+{
+    return encoding == getFixedWidthEncoding<T>();
+}
+
+using NumberTypeTag = Miro::PackedNumberType;
+
+Encoding getFixedWidthEncoding(const NumberTypeTag& type)
+{
+    return std::visit(
+        [](auto typeTag)
+        { return getFixedWidthEncoding<typename decltype(typeTag)::type>(); },
+        type);
+}
+
+std::size_t getByteWidth(const NumberTypeTag& type)
+{
+    return std::visit(
+        [](auto typeTag) { return sizeof(typename decltype(typeTag)::type); }, type);
+}
+
+constexpr auto isHostLittleEndian = std::endian::native == std::endian::little;
+
+// True when each element's bytes are its fields in reflect order with no
+// padding, so the whole array is already the records the wire holds.
+bool areElementsLaidOutAsRecords(const PackedStructArrayRef& ref)
+{
+    if (!isHostLittleEndian)
+        return false;
+
+    auto expectedOffset = std::size_t {0};
+
+    for (const auto& field: ref.fields)
+    {
+        if (field.offset != expectedOffset)
+            return false;
+
+        expectedOffset += getByteWidth(field.type);
+    }
+
+    return expectedOffset == ref.stride;
+}
+
+void writePackedStructLayout(Detail::ByteWriter& writer,
+                             const PackedStructArrayRef& ref)
+{
+    writer.writeVarint(ref.fields.size());
+
+    for (const auto& field: ref.fields)
+    {
+        writer.writeVarint(field.path.size());
+
+        for (auto segment: field.path)
+            writer.writeVarint(writer.getInternedKeyId(segment));
+
+        auto type =
+            Calder::Detail::findPackedFieldType(getFixedWidthEncoding(field.type));
+        writer.writeByte(static_cast<std::uint8_t>(*type));
+    }
+}
+
+void writePackedStructRecordsFieldByField(Detail::ByteWriter& writer,
+                                          const PackedStructArrayRef& ref)
+{
+    for (auto i = std::size_t {0}; i < ref.getElementCount(); ++i)
+    {
+        const auto* element = ref.elementBytes.data() + i * ref.stride;
+
+        for (const auto& field: ref.fields)
+        {
+            std::visit(
+                [&writer, element, &field](auto typeTag)
+                {
+                    using Number = typename decltype(typeTag)::type;
+                    auto value = Number {};
+                    std::memcpy(&value, element + field.offset, sizeof(value));
+                    writer.writeFixedWidth(value);
+                },
+                field.type);
+        }
+    }
+}
+
+void writePackedStructArray(Detail::ByteWriter& writer,
+                            const PackedStructArrayRef& ref)
+{
+    writer.writeTag(Tag::PackedStructArray);
+    auto sizeFieldOffset = writer.getNextWriteOffset();
+    writer.writeU32(0);
+    writer.writeU32(static_cast<std::uint32_t>(ref.getElementCount()));
+    writePackedStructLayout(writer, ref);
+
+    if (areElementsLaidOutAsRecords(ref))
+        writer.writeBytes(ref.elementBytes.data(), ref.elementBytes.size());
+    else
+        writePackedStructRecordsFieldByField(writer, ref);
+
+    patchPayloadSize(writer, sizeFieldOffset);
+}
+
+bool arePathsEqual(std::span<const std::string_view> first,
+                   std::span<const std::string_view> second)
+{
+    return std::ranges::equal(first, second);
+}
+
+// True when the stored records are byte for byte the C++ elements.
+bool areRecordsLaidOutAsElements(const Calder::Detail::StoredPackedLayout& layout,
+                                 const PackedStructArrayRef& ref)
+{
+    if (!isHostLittleEndian || layout.recordSize != ref.stride
+        || layout.fields.size() != ref.fields.size())
+        return false;
+
+    for (auto i = std::size_t {0}; i < ref.fields.size(); ++i)
+    {
+        const auto& stored = layout.fields[i];
+        const auto& wanted = ref.fields[i];
+
+        if (stored.offsetInRecord != wanted.offset
+            || stored.encoding != getFixedWidthEncoding(wanted.type)
+            || !arePathsEqual(layout.getPath(stored), wanted.path))
+            return false;
+    }
+
+    return true;
+}
+
+// One C++ field filled from one stored field, matched by path.
+struct PackedFieldCopy
+{
+    std::size_t sourceOffset = 0;
+    Encoding sourceEncoding = Encoding::Float32;
+    std::size_t destinationOffset = 0;
+    NumberTypeTag destinationType;
+    bool isRawByteCopy = false;
+};
+
+std::optional<PackedFieldCopy>
+    planPackedFieldCopy(const Calder::Detail::StoredPackedLayout& layout,
+                        const Miro::PackedStructField& wanted)
+{
+    for (const auto& stored: layout.fields)
+    {
+        if (!arePathsEqual(layout.getPath(stored), wanted.path))
+            continue;
+
+        auto isSameType = stored.encoding == getFixedWidthEncoding(wanted.type);
+        return PackedFieldCopy {.sourceOffset = stored.offsetInRecord,
+                                .sourceEncoding = stored.encoding,
+                                .destinationOffset = wanted.offset,
+                                .destinationType = wanted.type,
+                                .isRawByteCopy = isSameType && isHostLittleEndian};
+    }
+
+    return std::nullopt;
+}
+
+void copyPackedField(std::span<const std::uint8_t> record,
+                     std::byte* element,
+                     const PackedFieldCopy& copy)
+{
+    if (copy.isRawByteCopy)
+    {
+        std::memcpy(element + copy.destinationOffset,
+                    record.data() + copy.sourceOffset,
+                    getByteWidth(copy.destinationType));
+        return;
+    }
+
+    auto reader = ByteReader {record, copy.sourceOffset};
+    auto number = Calder::Detail::readNumber(reader, copy.sourceEncoding);
+
+    std::visit(
+        [element, &copy, &number](auto typeTag)
+        {
+            using Number = typename decltype(typeTag)::type;
+            auto* destination = element + copy.destinationOffset;
+            auto value = Number {};
+            std::memcpy(&value, destination, sizeof(value));
+            convertPackedElement(number, value);
+            std::memcpy(destination, &value, sizeof(value));
+        },
+        copy.destinationType);
+}
+
+void readPackedRecordsFieldByField(const Calder::Detail::StoredPackedLayout& layout,
+                                   std::span<const std::uint8_t> records,
+                                   const PackedStructArrayRef& ref,
+                                   std::size_t count)
+{
+    auto copies = std::vector<PackedFieldCopy> {};
+
+    for (const auto& wanted: ref.fields)
+    {
+        if (auto copy = planPackedFieldCopy(layout, wanted))
+            copies.push_back(*copy);
+    }
+
+    for (auto i = std::size_t {0}; i < count; ++i)
+    {
+        auto record = records.subspan(i * layout.recordSize, layout.recordSize);
+        auto* element = ref.elementBytes.data() + i * ref.stride;
+
+        for (const auto& copy: copies)
+            copyPackedField(record, element, copy);
+    }
+}
+
+ValueHeader makePackedRecordHeader(std::size_t recordOffset)
+{
+    auto header = ValueHeader {};
+    header.tag = Tag::Object;
+    header.category = ValueCategory::Object;
+    header.valid = true;
+    header.valueOffset = recordOffset;
+    header.payloadOffset = recordOffset;
+    header.payloadEndOffset = recordOffset;
+    return header;
+}
+
+// True when `path` continues `prefix` for its first `depth` segments.
+bool startsWithPrefix(std::span<const std::string_view> path,
+                      std::span<const std::string_view> prefix,
+                      std::size_t depth)
+{
+    return path.size() > depth && prefix.size() >= depth
+           && std::ranges::equal(path.first(depth), prefix.first(depth));
 }
 
 template <typename T>
@@ -411,6 +650,17 @@ bool Writer::visitPacked(PackedArrayRef ref)
     return true;
 }
 
+bool Writer::visitPackedStructs(PackedStructArrayRef ref)
+{
+    if (opts.shape != Shape::Array)
+        return false;
+
+    writer.truncateTo(slot.slotStartOffset);
+    slot.isSlotReplacedByPackedOrNull = true;
+    writePackedStructArray(writer, ref);
+    return true;
+}
+
 void Writer::writeNull()
 {
     // An empty optional of a container type arrives after its header.
@@ -524,7 +774,8 @@ Reader::~Reader() = default;
 
 void Reader::restartSlot(StepFromParent stepToUse,
                          const ValueHeader& headerToUse,
-                         Options&& optsToUse)
+                         Options&& optsToUse,
+                         std::optional<PackedRecordSlot> packedRecordToUse)
 {
     opts = std::move(optsToUse);
     header = headerToUse;
@@ -532,6 +783,8 @@ void Reader::restartSlot(StepFromParent stepToUse,
     hasReportedObjectMismatch = false;
     resumeOffset = headerToUse.payloadOffset;
     resumeElementIndex = 0;
+    packedRecord = packedRecordToUse;
+    hasReadStoredPackedLayout = false;
 }
 
 bool Reader::hasCategory(ValueCategory category) const
@@ -588,6 +841,39 @@ bool Reader::visitPacked(PackedArrayRef ref)
     return true;
 }
 
+bool Reader::readStoredPackedLayoutOnce()
+{
+    if (!hasReadStoredPackedLayout)
+    {
+        hasReadStoredPackedLayout = true;
+        isStoredPackedLayoutValid = Calder::Detail::readStoredPackedLayout(
+            document, header, storedPackedLayout);
+    }
+
+    return isStoredPackedLayoutValid;
+}
+
+bool Reader::visitPackedStructs(PackedStructArrayRef ref)
+{
+    if (!header.valid || header.tag != Tag::PackedStructArray)
+        return false;
+
+    if (!readStoredPackedLayoutOnce())
+        return true;
+
+    const auto& layout = storedPackedLayout;
+    auto count = std::min(ref.getElementCount(), layout.recordCount);
+    auto records =
+        document.bytes().subspan(layout.recordsOffset, count * layout.recordSize);
+
+    if (areRecordsLaidOutAsElements(layout, ref))
+        std::memcpy(ref.elementBytes.data(), records.data(), records.size());
+    else
+        readPackedRecordsFieldByField(layout, records, ref, count);
+
+    return true;
+}
+
 std::size_t Reader::arraySize() const
 {
     if (!isStoredAs(ValueKind::Array))
@@ -602,6 +888,12 @@ std::size_t Reader::arraySize() const
 Vector<std::string> Reader::mapKeys() const
 {
     auto keys = Vector<std::string> {};
+
+    if (packedRecord)
+    {
+        appendPackedRecordKeys(keys);
+        return keys;
+    }
 
     if (!isStoredAs(ValueKind::Object))
         reportTypeMismatch(ValueKind::Object);
@@ -642,14 +934,103 @@ std::optional<Calder::Detail::ObjectEntry> Reader::findEntry(std::string_view ke
 
 Reflector& Reader::spawnChild(StepFromParent step,
                               const ValueHeader& childHeader,
-                              Options&& childOpts)
+                              Options&& childOpts,
+                              std::optional<PackedRecordSlot> childPackedRecord)
 {
-    if (reusableChild)
-        reusableChild->restartSlot(step, childHeader, std::move(childOpts));
-    else
-        reusableChild = new Reader(*this, step, childHeader, std::move(childOpts));
+    if (!reusableChild)
+        reusableChild = new Reader(*this, step, childHeader, Options {});
 
+    reusableChild->restartSlot(
+        step, childHeader, std::move(childOpts), childPackedRecord);
     return *reusableChild;
+}
+
+Reflector& Reader::spawnPackedRecordChild(std::size_t index, Options&& childOpts)
+{
+    if (!readStoredPackedLayoutOnce() || index >= storedPackedLayout.recordCount)
+        return spawnMissingChild(index, std::move(childOpts));
+
+    auto recordOffset =
+        storedPackedLayout.recordsOffset + index * storedPackedLayout.recordSize;
+    return spawnChild(index,
+                      makePackedRecordHeader(recordOffset),
+                      std::move(childOpts),
+                      PackedRecordSlot {.layout = storedPackedLayout,
+                                        .recordOffset = recordOffset});
+}
+
+std::optional<std::size_t>
+    Reader::findPackedFieldAtThisDepth(std::string_view key) const
+{
+    const auto& layout = packedRecord->layout.get();
+    auto prefix = getPackedRecordPrefix();
+
+    for (auto i = std::size_t {0}; i < layout.fields.size(); ++i)
+    {
+        auto path = layout.getPath(layout.fields[i]);
+
+        if (startsWithPrefix(path, prefix, packedRecord->pathDepth)
+            && path[packedRecord->pathDepth] == key)
+            return i;
+    }
+
+    return std::nullopt;
+}
+
+std::span<const std::string_view> Reader::getPackedRecordPrefix() const
+{
+    const auto& layout = packedRecord->layout.get();
+
+    if (packedRecord->pathDepth == 0)
+        return {};
+
+    return layout.getPath(layout.fields[packedRecord->prefixField]);
+}
+
+void Reader::appendPackedRecordKeys(Vector<std::string>& keys) const
+{
+    const auto& layout = packedRecord->layout.get();
+    auto prefix = getPackedRecordPrefix();
+    auto depth = packedRecord->pathDepth;
+    auto previousKey = std::optional<std::string_view> {};
+
+    for (const auto& field: layout.fields)
+    {
+        auto path = layout.getPath(field);
+
+        if (!startsWithPrefix(path, prefix, depth) || previousKey == path[depth])
+            continue;
+
+        previousKey = path[depth];
+        keys.add(std::string {path[depth]});
+    }
+}
+
+Reflector& Reader::spawnPackedFieldChild(std::string_view key, Options&& childOpts)
+{
+    auto fieldIndex = findPackedFieldAtThisDepth(key);
+
+    if (!fieldIndex)
+        return spawnMissingChild(key, std::move(childOpts));
+
+    const auto& layout = packedRecord->layout.get();
+    const auto& field = layout.fields[*fieldIndex];
+    auto childDepth = packedRecord->pathDepth + 1;
+
+    if (layout.getPath(field).size() == childDepth)
+        return spawnChild(
+            key,
+            Calder::Detail::makePackedElementHeader(
+                field.encoding, packedRecord->recordOffset + field.offsetInRecord),
+            std::move(childOpts));
+
+    return spawnChild(key,
+                      makePackedRecordHeader(packedRecord->recordOffset),
+                      std::move(childOpts),
+                      PackedRecordSlot {.layout = layout,
+                                        .recordOffset = packedRecord->recordOffset,
+                                        .pathDepth = childDepth,
+                                        .prefixField = *fieldIndex});
 }
 
 Reflector& Reader::spawnMissingChild(StepFromParent step, Options&& childOpts)
@@ -675,6 +1056,9 @@ Reflector& Reader::spawnElementChild(std::size_t index,
 
 Reflector& Reader::atKey(std::string_view key, Options childOpts)
 {
+    if (packedRecord)
+        return spawnPackedFieldChild(key, std::move(childOpts));
+
     if (!isStoredAs(ValueKind::Object) && !hasReportedObjectMismatch)
     {
         reportTypeMismatch(ValueKind::Object);
@@ -705,6 +1089,9 @@ Reflector& Reader::atIndex(std::size_t index, Options childOpts)
 {
     if (!hasCategory(ValueCategory::Array) || index >= header.elementCount)
         return spawnMissingChild(index, std::move(childOpts));
+
+    if (header.encoding == Encoding::PackedStruct)
+        return spawnPackedRecordChild(index, std::move(childOpts));
 
     rewindResumeOffsetIfPast(index);
 

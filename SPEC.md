@@ -153,8 +153,8 @@ The smallest document is 10 bytes, for a root of null:
 
 ## 3. Values: every tag
 
-Every value is one tag byte followed by its payload. There are 18 tags,
-numbered 0 to 17. Any other tag byte is an error.
+Every value is one tag byte followed by its payload. There are 19 tags,
+numbered 0 to 18. Any other tag byte is an error.
 
 | Tag | Name | Payload | JSON shape |
 |----:|------|---------|-----------|
@@ -176,13 +176,14 @@ numbered 0 to 17. Any other tag byte is an error.
 | 15 | PackedUInt8 | u32 count, then `count` × u8 | array of integers |
 | 16 | PackedInt16 | u32 count, then `count` × i16 | array of integers |
 | 17 | PackedUInt16 | u32 count, then `count` × u16 | array of integers |
+| 18 | PackedStructArray | u32 payload size, u32 count, a field layout, then `count` records | array of objects |
 
 Note which containers carry a payload size and which don't:
 
-- **Object, Map, Array, PackedInt32, PackedInt64** start with a u32 payload
-  size, so a reader can skip them without parsing their contents. For Array,
-  PackedInt32 and PackedInt64 the payload size *includes* the 4-byte count
-  that follows it.
+- **Object, Map, Array, PackedInt32, PackedInt64, PackedStructArray** start
+  with a u32 payload size, so a reader can skip them without parsing their
+  contents. For Array, PackedInt32, PackedInt64 and PackedStructArray the
+  payload size *includes* the 4-byte count that follows it.
 - **The six fixed-width packed arrays** (PackedFloat, PackedDouble,
   PackedInt8, PackedUInt8, PackedInt16, PackedUInt16) have no payload size.
   Their payload is the count followed by exactly `count × width` bytes,
@@ -307,9 +308,63 @@ Rules for each:
   fixed-width integers, little-endian; Int8 and Int16 are two's complement.
   `10 02 00 00 00 FF FF 2C 01` is the 16-bit signed list `[-1, 300]`.
 
-Lists of other element kinds (strings, booleans, objects, lists) use Array.
-An empty list of numbers is a packed array with count 0, for example
-`0A 00 00 00 00`.
+Lists of other element kinds (strings, booleans, objects, lists) use Array,
+except lists of small number-only structs (section 3.9). An empty list of
+numbers is a packed array with count 0, for example `0A 00 00 00 00`.
+
+### 3.9 PackedStructArray
+
+A list of objects that all have the same fields, every field a number,
+stored as a table: the field names and number types once, then one
+fixed-size record per element with no keys and no tags.
+
+```
+12 | u32 payloadSize | u32 count | varint fieldCount | field × fieldCount | record × count
+
+field:  varint pathLength | varint keyId × pathLength | u8 fieldType
+record: one value per field, in field order, each fieldType's bytes
+        little-endian, no padding between them
+```
+
+| fieldType | Type | Bytes |
+|----:|------|----:|
+| 0 | i8 | 1 |
+| 1 | u8 | 1 |
+| 2 | i16 | 2 |
+| 3 | u16 | 2 |
+| 4 | i32 | 4 |
+| 5 | u32 | 4 |
+| 6 | i64 | 8 |
+| 7 | u64 | 8 |
+| 8 | f32 | 4 |
+| 9 | f64 | 8 |
+
+Rules:
+
+- **Records decode to objects.** A field's path is the chain of keys
+  (key-table ids, as in an Object) from the record down to the number. A
+  path of length 1 is a field of the record itself; a longer path is a
+  field of a nested object, so `[value, x]` puts the number at
+  `record.value.x`. Fields that share a leading key share that nested
+  object. Field order is the order the program reflects its fields in,
+  which need not match memory order; a decoder just follows it.
+- **Integers decode to integers and floats to floating-point numbers**,
+  using the field's own type: an i16 field reads 2 bytes as signed, a u64
+  field reads 8 bytes as unsigned (unlike Int, section 10.1). f32 widens to
+  binary64 as in section 3.3.
+- **The record size** is the sum of the field byte widths. The records fill
+  the rest of the payload exactly: `count × recordSize` bytes after the
+  layout.
+- `fieldCount` is at least 1 and every `pathLength` at least 1. No two
+  fields have the same path, and no path is a leading part of another (a
+  key can't be both a number and an object).
+
+The encoder writes this tag for a `std::vector` or `std::array` of a struct
+whose reflected fields are all fixed-width numbers (`int8_t` … `uint64_t`,
+`float`, `double`) or such structs. A struct with a `bool`, enum, string,
+list or optional field is stored as an Array of Objects instead, and so is
+a lone struct that is not in a list. Doubles keep 8 bytes here: there is
+no per-value narrowing to f32 as in section 3.3.
 
 ---
 
@@ -408,6 +463,26 @@ decode_value(data, offset, limit, names, depth):
          check count * width <= limit - offset       # compute in 64 bits or unbounded
          items = [read element of that type, count times]
          return items, offset
+      18:
+         size = read_u32(); end = offset + size; check end <= limit
+         count = read_u32()
+         fieldCount = read_varint(); check 1 <= fieldCount <= end - offset
+         fields = []
+         repeat fieldCount times:
+             pathLength = read_varint(); check 1 <= pathLength <= end - offset
+             path = [names[read_varint()] repeated pathLength times]   # each id < len(names)
+             type = read_u8(); check type <= 9
+             fields.append((path, type))
+         check no two paths are equal and no path is a leading part of another
+         recordSize = sum of the field types' widths
+         check count * recordSize == end - offset    # compute in 64 bits or unbounded
+         items = []
+         repeat count times:
+             record = empty object
+             for (path, type) in fields:
+                 put read element of that type at record[path[0]][path[1]]…
+             items.append(record)
+         return items, end
       otherwise: error "unknown tag"
 ```
 
@@ -427,6 +502,7 @@ lists the same checks as rules.
 | Array | array |
 | PackedFloat, PackedDouble | array of floating-point numbers |
 | PackedInt8 … PackedUInt16, PackedInt32, PackedInt64 | array of integers |
+| PackedStructArray | array of objects (section 3.9) |
 
 The tree keeps two kinds of number, **integer** and **floating-point**, as
 JSON parsers in most languages do. An Int is always an integer, even when
@@ -673,7 +749,7 @@ stop reading.)
    document, and the table ends exactly at the end of the document.
 4. The root value starts at offset 8 and ends exactly at the key table
    offset.
-5. Every tag is 0 to 17.
+5. Every tag is 0 to 18.
 6. Every varint ends within 10 bytes, its 10th byte (if any) is 0x00 or
    0x01, and it does not run past the end of the enclosing container.
 7. Every String, map key and key-table name length fits in the bytes that
@@ -692,6 +768,10 @@ stop reading.)
 13. Strings, map keys and key names are valid UTF-8 for the JSON view
     (section 5.4).
 14. Nesting stays within the decoder's maximum depth.
+15. A PackedStructArray's layout follows section 3.9: field count and every
+    path length at least 1 and no larger than the payload bytes left, every
+    field type 0 to 9, no repeated path, no path inside another's number,
+    and the records fill the payload exactly.
 
 Never allocate memory from a count before checking it against the bytes
 that remain (rules 3, 10, 11): a corrupt count of 4 billion must not make
@@ -723,6 +803,12 @@ encoder writes pass both.
 - Duplicate keys: the generic C++ tree (section 12) keeps the last
   occurrence, but looking up one field by name (`View::operator[]`) finds
   the first.
+- A PackedStructArray whose records don't fill its payload reads the
+  whole records that fit (and no more than `count`); a layout that breaks
+  rule 15 in any other way reads as an empty list. A repeated path loads
+  from its first field.
+- `View::operator[]` does not index into a PackedStructArray (it reads as
+  missing); `fromBinary` into a typed list or into `Miro::JSON` does.
 - A journal set frame is skipped only when its value's first tag is
   unknown or its header runs past the payload. Past that the value is read
   as leniently as a document: an unknown key id reads as `""` (so that
@@ -748,7 +834,9 @@ written as the `int64_t` with the same bits, so 18446744073709551615
 (2^64 − 1) is stored as zigzag(−1) = `01` and decodes to −1. Only a reader
 that knows the field is unsigned can reinterpret it.
 **Fix:** add a UInt tag (plain varint, no zigzag) and a PackedUInt64 tag,
-and write unsigned 32- and 64-bit values with them.
+and write unsigned 32- and 64-bit values with them. A u64 field of a
+PackedStructArray (section 3.9) already keeps its sign, though the generic
+C++ tree (section 12) still shows it as the int64 with the same bits.
 
 ### 10.2 Variant alternatives are named after compiler-specific C++ type names
 
@@ -1090,6 +1178,45 @@ Tree:
 
 ```json
 {"mode": "on", "stray": 7, "id": -1, "either": {"basic_string<char>": "hi"}, "big": [1, -1]}
+```
+
+### 11.7 Packed struct array with a nested struct
+
+Caption: `struct Vec2 { float x, y; }; struct Marker { std::int16_t id;
+Vec2 at; }; struct Rig { std::vector<Marker> markers; }`, value
+`{{{1, {0.5f, 1.0f}}, {-2, {2.0f, 0.25f}}}}`. `sizeof(Marker)` is 12 (2
+padding bytes after `id`); each record is 10.
+
+```
+4D 49 42 31 37 00 00 00 07 2A 00 00 00 00 12 24
+00 00 00 02 00 00 00 03 01 01 02 02 02 03 08 02
+02 04 08 01 00 00 00 00 3F 00 00 80 3F FE FF 00
+00 00 40 00 00 80 3E 05 07 6D 61 72 6B 65 72 73
+02 69 64 02 61 74 01 78 01 79
+```
+
+```
+@0   4D 49 42 31   magic
+@4   37 00 00 00   key table offset = 55
+@8   07 2A 00 00 00   Object, payload size 42
+@13  00              "markers"
+@14  12                PackedStructArray
+@15  24 00 00 00         payload size 36
+@19  02 00 00 00         count = 2
+@23  03                  3 fields
+@24  01 01 02              path ["id"], i16
+@27  02 02 03 08           path ["at", "x"], f32
+@31  02 02 04 08           path ["at", "y"], f32
+@35  01 00  00 00 00 3F  00 00 80 3F   record 0: 1, 0.5, 1.0
+@45  FE FF  00 00 00 40  00 00 80 3E   record 1: -2, 2.0, 0.25
+@55  05  07 "markers"  02 "id"  02 "at"  01 "x"  01 "y"   key table
+```
+
+Tree:
+
+```json
+{"markers": [{"id": 1, "at": {"x": 0.5, "y": 1.0}},
+             {"id": -2, "at": {"x": 2.0, "y": 0.25}}]}
 ```
 
 ---

@@ -71,6 +71,18 @@ EXAMPLE_LEAKS = from_hex(
     "6E 67 3C 63 68 61 72 3E 03 62 69 67"
 )
 
+EXAMPLE_PACKED_STRUCTS = from_hex(
+    "4D 49 42 31 37 00 00 00 07 2A 00 00 00 00 12 24"
+    "00 00 00 02 00 00 00 03 01 01 02 02 02 03 08 02"
+    "02 04 08 01 00 00 00 00 3F 00 00 80 3F FE FF 00"
+    "00 00 40 00 00 80 3E 05 07 6D 61 72 6B 65 72 73"
+    "02 69 64 02 61 74 01 78 01 79"
+)
+
+
+def packed_structs(count, layout, records):
+    return sized(18, u32(count) + layout + records)
+
 
 def decode_root(root_bytes, names=()):
     return decode_document(document(root_bytes, names))
@@ -115,6 +127,12 @@ class WorkedExamples(unittest.TestCase):
     def test_leaks_on_the_wire(self):
         expected = {"mode": "on", "stray": 7, "id": -1, "either": {"basic_string<char>": "hi"}, "big": [1, -1]}
         self.assertEqual(decode_document(EXAMPLE_LEAKS), expected)
+
+    def test_packed_struct_array_is_a_list_of_objects(self):
+        self.assertEqual(
+            decode_document(EXAMPLE_PACKED_STRUCTS),
+            {"markers": [{"id": 1, "at": {"x": 0.5, "y": 1.0}}, {"id": -2, "at": {"x": 2.0, "y": 0.25}}]},
+        )
 
     def test_smallest_document(self):
         self.assertIsNone(decode_document(from_hex("4D 49 42 31 09 00 00 00 00 00")))
@@ -204,7 +222,19 @@ class ValidationRules(unittest.TestCase):
         self.assertRejected(b"MIB1" + u32(9) + from_hex("03 00"), "Int")
 
     def test_rule5_unknown_tag(self):
-        self.assertRejected(document(from_hex("12")), "unknown tag 18")
+        self.assertRejected(document(from_hex("13")), "unknown tag 19")
+
+    def test_rule15_packed_struct_layout(self):
+        names = (b"a", b"b")
+        one_u8_field = from_hex("01 01 00 01")
+        self.assertEqual(decode_root(packed_structs(2, one_u8_field, from_hex("07 FF")), names), [{"a": 7}, {"a": 255}])
+        self.assertRejected(document(packed_structs(0, from_hex("00"), b""), names), "field count 0")
+        self.assertRejected(document(packed_structs(0, from_hex("01 00 00 01"), b""), names), "path length 0")
+        self.assertRejected(document(packed_structs(0, from_hex("01 01 05 01"), b""), names), "key id 5")
+        self.assertRejected(document(packed_structs(0, from_hex("01 01 00 0A"), b""), names), "field type 10")
+        self.assertRejected(document(packed_structs(2, one_u8_field, from_hex("07")), names), "do not fill")
+        self.assertRejected(document(packed_structs(0, from_hex("02 01 00 01 01 00 01"), b""), names), "twice")
+        self.assertRejected(document(packed_structs(0, from_hex("02 01 00 01 02 00 01 01"), b""), names), "inside a number")
 
     def test_rule6_varints(self):
         self.assertRejected(document(from_hex("03 FF FF FF FF FF FF FF FF FF 02")), "overflows 64 bits")
@@ -322,7 +352,7 @@ class JournalRules(unittest.TestCase):
         self.assertEqual(report.truncated_at, 8 + len(self.base_with_a))
 
     def test_bad_base_root_replays_onto_empty_object(self):
-        base_with_bad_root = document(from_hex("12"), [b"x"])
+        base_with_bad_root = document(from_hex("13"), [b"x"])
         report = read_journal(journal(base_with_bad_root, self.set_frame(b"b", from_hex("02"))))
         self.assertEqual(report.tree, {"b": True})
         self.assertIsNotNone(report.base_problem)
