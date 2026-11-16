@@ -214,7 +214,23 @@ struct Rig
     MIRO_REFLECT(markers)
 };
 
+struct ExternalVec3
+{
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+};
+
+struct ExternalPath
+{
+    std::vector<ExternalVec3> points;
+
+    MIRO_REFLECT(points)
+};
+
 } // namespace PackedStructArrayTestTypes
+
+MIRO_REFLECT_EXTERNAL(PackedStructArrayTestTypes::ExternalVec3, x, y, z)
 
 namespace
 {
@@ -397,6 +413,18 @@ auto corruptRecordsNeverCrash = test(
     }
 
     check(createFromBinary<Track>(bytes) == makeTrack());
+};
+
+auto externalStructsPack = test(
+    "Packed struct arrays: an external Vec3 list writes the same bytes as Vec3") = []
+{
+    auto path = Path {{{1.0f, 2.0f, 3.0f}, {-4.5f, 0.0f, 1e9f}}};
+    auto externalPath = ExternalPath {};
+
+    for (const auto& point: path.points)
+        externalPath.points.push_back({point.x, point.y, point.z});
+
+    check(toBinary(externalPath) == toBinary(path));
 };
 
 auto journalFramesCarryPackedRecords =
