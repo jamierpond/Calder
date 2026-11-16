@@ -60,7 +60,8 @@ constexpr std::array<std::uint8_t, sizeof(T)> encodeLittleEndian(T value)
     for (auto& byte: bytes)
     {
         byte = static_cast<std::uint8_t>(bits & lowByteMask);
-        bits = static_cast<UnsignedBitsOf<T>>(bits >> bitsPerByte);
+        auto widenedBits = static_cast<std::uint64_t>(bits);
+        bits = static_cast<UnsignedBitsOf<T>>(widenedBits >> bitsPerByte);
     }
 
     return bytes;

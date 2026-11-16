@@ -372,7 +372,7 @@ std::size_t getFixedByteWidth(Encoding encoding)
     auto width = std::size_t {0};
     visitFixedWidthEncoding(encoding,
                             [&width](auto row)
-                            { width = sizeof(typename decltype(row)::Number); });
+                            { width = sizeof(typename decltype(row)::NumberType); });
     return width;
 }
 
@@ -407,8 +407,8 @@ Number readNumber(ByteReader& reader, Encoding encoding)
     auto number = Number {std::int64_t {0}};
     auto readFixedWidthNumber = [&reader, &number](auto row)
     {
-        number =
-            widenToNumber(reader.readFixedWidth<typename decltype(row)::Number>());
+        number = widenToNumber(
+            reader.readFixedWidth<typename decltype(row)::NumberType>());
     };
 
     if (!visitFixedWidthEncoding(encoding, readFixedWidthNumber))

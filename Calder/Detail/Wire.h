@@ -469,7 +469,7 @@ template <Encoding encodingToUse, FixedWidthNumber NumberToUse>
 struct FixedWidthEncoding
 {
     static constexpr auto encoding = encodingToUse;
-    using Number = NumberToUse;
+    using NumberType = NumberToUse;
 };
 
 using FixedWidthEncodings =
@@ -501,7 +501,8 @@ constexpr Encoding getFixedWidthEncoding()
     auto findMatchingRow = []<typename... Rows>(std::tuple<Rows...>*)
     {
         auto found = Encoding::Tagged;
-        ((std::same_as<T, typename Rows::Number> ? (found = Rows::encoding) : found),
+        ((std::same_as<T, typename Rows::NumberType> ? (found = Rows::encoding)
+                                                     : found),
          ...);
         return found;
     };

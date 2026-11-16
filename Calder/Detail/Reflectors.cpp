@@ -77,7 +77,10 @@ void writePacked(ByteWriter& writer, std::span<double> values)
         return;
     }
 
-    auto narrowed = std::vector<float>(values.begin(), values.end());
+    auto narrowed = std::vector<float>(values.size());
+    std::ranges::transform(values,
+                           narrowed.begin(),
+                           [](double value) { return static_cast<float>(value); });
     writePacked(writer, std::span<float> {narrowed});
 }
 
@@ -316,8 +319,8 @@ void writePackedStructRecordsFieldByField(ByteWriter& writer,
             std::visit(
                 [&writer, element, &field](auto typeTag)
                 {
-                    using Number = typename decltype(typeTag)::type;
-                    auto value = Number {};
+                    using FieldNumber = typename decltype(typeTag)::type;
+                    auto value = FieldNumber {};
                     std::memcpy(&value, element + field.offset, sizeof(value));
                     writer.writeFixedWidth(value);
                 },
@@ -430,9 +433,9 @@ bool copyPackedField(std::span<const std::uint8_t> record,
     return std::visit(
         [element, &copy, &number](auto typeTag)
         {
-            using Number = typename decltype(typeTag)::type;
+            using FieldNumber = typename decltype(typeTag)::type;
             auto* destination = element + copy.destinationOffset;
-            auto value = Number {};
+            auto value = FieldNumber {};
             std::memcpy(&value, destination, sizeof(value));
             auto hasFit = convertPackedElement(number, value);
             std::memcpy(destination, &value, sizeof(value));
