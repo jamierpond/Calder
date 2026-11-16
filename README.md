@@ -68,11 +68,21 @@ else if (result.hasProblems())  // loaded, but fields were missing or refused
 ```
 
 A field the file lacks keeps the value it had, a field stored as another type
-is skipped, and a number too big for its field is refused; each is counted,
-except a refused number in a field narrower than `int` or `double`, which
-Miro refuses before Calder sees it.
+is skipped, and a number too big for its field or an enum name the enum no
+longer has is refused; each is counted.
 Garbage, a cut-short file and nesting deeper than 256 levels never crash a
 load.
+
+A file can store a list element in one byte that takes kilobytes in memory, so
+every load has a memory budget: 64 times the input's size, and at least 64 MiB.
+A load that would go past it stops with `OverBudget` before allocating. Raise
+or remove the budget with `LoadOptions`:
+
+```cpp
+auto options = Calder::LoadOptions {
+    .maximumAllocationInBytes = Calder::LoadOptions::noAllocationLimit};
+auto result = Calder::loadFromFile(save, "save.calder", options);
+```
 
 ## The format
 

@@ -712,11 +712,12 @@ void Writer::resizeArray(std::size_t newSize)
     slot.elementCount = std::max(slot.elementCount, newSize);
 }
 
-Reader::Reader(const ReadStart& start, Options optsToUse, LoadResult& resultToUse)
+Reader::Reader(const ReadStart& start, Options optsToUse, const LoadContext& load)
     : Reflector(std::move(optsToUse))
     , document(start.document)
     , header(start.header)
-    , result(resultToUse)
+    , result(load.result)
+    , budget(load.budget)
     , resumeOffset(start.header.payloadOffset)
     , packedRecord(start.packedRecord)
 {
@@ -730,6 +731,7 @@ Reader::Reader(const Reader& parentToUse,
     , document(parentToUse.document)
     , header(headerToUse)
     , result(parentToUse.result)
+    , budget(parentToUse.budget)
     , parent(parentToUse)
     , depth(parentToUse.depth + 1)
     , stepFromParent(stepToUse)
@@ -970,10 +972,28 @@ Vector<std::string> Reader::mapKeys() const
         document, header, header.payloadOffset, header.payloadEndOffset};
 
     while (auto entry = cursor.readNextEntry())
+    {
+        budget.spend(1, sizeof(std::string));
         keys.add(std::string {entry->key});
+    }
 
     reportDamageIfStopped(cursor);
     return keys;
+}
+
+bool Reader::approveElementAllocation(std::size_t elementCount,
+                                      std::size_t elementSizeInBytes)
+{
+    budget.spend(elementCount, elementSizeInBytes);
+    return true;
+}
+
+void Reader::reportRefusedValue()
+{
+    if (kind() == ValueKind::String)
+        reportFieldProblem(FieldProblem::Kind::NoSuchEnumerator);
+    else
+        reportFieldProblem(FieldProblem::Kind::NumberDidNotFit);
 }
 
 std::optional<ObjectEntry> Reader::findEntry(std::string_view key)

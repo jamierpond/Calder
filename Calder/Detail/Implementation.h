@@ -25,22 +25,26 @@ std::vector<std::uint8_t> toBinary(const T& value)
 }
 
 template <typename T>
-std::optional<T> createFromBinary(const ByteRange auto& bytes)
+std::optional<T> createFromBinary(const ByteRange auto& bytes,
+                                  const LoadOptions& options)
 {
     auto value = T {};
 
-    if (!fromBinary(value, bytes).hasLoaded())
+    if (!fromBinary(value, bytes, options).hasLoaded())
         return std::nullopt;
 
     return value;
 }
 
 template <typename T>
-LoadResult fromBinary(T& value, const ByteRange auto& bytes)
+LoadResult
+    fromBinary(T& value, const ByteRange auto& bytes, const LoadOptions& options)
 {
-    return Detail::runGuardedLoad(
-        [&](LoadResult& result)
-        { Detail::loadBytes(value, Detail::viewAsBytes(bytes), result); });
+    auto data = Detail::viewAsBytes(bytes);
+    return Detail::runGuardedLoad(options,
+                                  data.size(),
+                                  [&](const Detail::LoadContext& load)
+                                  { Detail::loadBytes(value, data, load); });
 }
 
 template <typename T>
@@ -57,43 +61,49 @@ bool saveToFile(const T& value, const std::filesystem::path& file)
 }
 
 template <typename T>
-std::optional<T> createFromFile(const std::filesystem::path& file)
+std::optional<T> createFromFile(const std::filesystem::path& file,
+                                const LoadOptions& options)
 {
     auto value = T {};
 
-    if (!loadFromFile(value, file).hasLoaded())
+    if (!loadFromFile(value, file, options).hasLoaded())
         return std::nullopt;
 
     return value;
 }
 
 template <typename T>
-LoadResult loadFromFile(T& value, const std::filesystem::path& file)
+LoadResult loadFromFile(T& value,
+                        const std::filesystem::path& file,
+                        const LoadOptions& options)
 {
     auto bytes = Detail::FileBytes::read(file);
 
     if (!bytes)
         return {.status = LoadStatus::FileMissing};
 
-    return fromBinary(value, bytes->getBytes());
+    return fromBinary(value, bytes->getBytes(), options);
 }
 
 template <typename T>
-std::optional<T> createFromBinary(const View& view)
+std::optional<T> createFromBinary(const View& view, const LoadOptions& options)
 {
     auto value = T {};
 
-    if (!fromBinary(value, view).hasLoaded())
+    if (!fromBinary(value, view, options).hasLoaded())
         return std::nullopt;
 
     return value;
 }
 
 template <typename T>
-LoadResult fromBinary(T& value, const View& view)
+LoadResult fromBinary(T& value, const View& view, const LoadOptions& options)
 {
-    return Detail::runGuardedLoad([&](LoadResult& result)
-                                  { Detail::loadView(value, view, result); });
+    auto inputSizeInBytes = Detail::ViewAccess::getDocument(view).bytes().size();
+    return Detail::runGuardedLoad(options,
+                                  inputSizeInBytes,
+                                  [&](const Detail::LoadContext& load)
+                                  { Detail::loadView(value, view, load); });
 }
 
 template <typename T>

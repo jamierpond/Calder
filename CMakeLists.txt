@@ -12,17 +12,19 @@ include(cmake/CPM.cmake)
 
 # jamierpond/Miro jp/calder-emberstore: Miro's develop plus the open pull
 # requests Calder needs (visitPacked, missing containers keep their defaults,
-# range-checked numbers, compile-time type names, packed struct arrays).
+# range-checked numbers that report refusals, compile-time type names, packed
+# struct arrays, allocation approval).
 if (NOT TARGET Miro)
     CPMAddPackage(
             NAME Miro
             GITHUB_REPOSITORY jamierpond/Miro
-            GIT_TAG 65d6c7b02aa16d0191dea8046fa406e6bf2ee2be)
+            GIT_TAG 6aa7ecc44ab708ca0ae23b1aac9a79787e8cd544)
 endif ()
 
 add_library(calder STATIC
         Calder/Detail/Wire.cpp
         Calder/Detail/Reflectors.cpp
+        Calder/Detail/AllocationBudget.cpp
         Calder/Detail/View.cpp
         Calder/Detail/File.cpp
         Calder/Detail/AtomicWrite.cpp

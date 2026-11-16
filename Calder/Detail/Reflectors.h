@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AllocationBudget.h"
 #include "Wire.h"
 #include <Miro/Reflection/Reflector.h>
 
@@ -95,6 +96,13 @@ struct NestingTooDeep : std::exception
 {
 };
 
+// What every step of one load writes to: its result and its memory budget.
+struct LoadContext
+{
+    LoadResult& result;
+    AllocationBudget& budget;
+};
+
 enum class ReadOutcome
 {
     Read,
@@ -131,7 +139,7 @@ struct ReadStart
 class Reader final : public Reflector
 {
 public:
-    Reader(const ReadStart& start, Options optsToUse, LoadResult& resultToUse);
+    Reader(const ReadStart& start, Options optsToUse, const LoadContext& load);
 
     ~Reader() override;
 
@@ -147,6 +155,10 @@ public:
 
     std::size_t arraySize() const override;
     Vector<std::string> mapKeys() const override;
+
+    bool approveElementAllocation(std::size_t elementCount,
+                                  std::size_t elementSizeInBytes) override;
+    void reportRefusedValue() override;
 
     void requirePolymorphicSupport(std::string_view) override {}
 
@@ -201,6 +213,7 @@ private:
     const Document& document;
     ValueHeader header;
     LoadResult& result;
+    AllocationBudget& budget;
     std::optional<std::reference_wrapper<const Reader>> parent;
     std::size_t depth = 0;
     StepFromParent stepFromParent;

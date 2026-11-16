@@ -39,14 +39,21 @@ std::span<const std::uint8_t> viewAsBytes(const IsByteRange auto& bytes)
     return {first, std::ranges::size(bytes)};
 }
 
-template <typename Load>
-LoadResult runGuardedLoad(Load&& load)
+template <typename LoadValue>
+LoadResult runGuardedLoad(const LoadOptions& options,
+                          std::size_t inputSizeInBytes,
+                          LoadValue&& loadValue)
 {
     auto result = LoadResult {};
+    auto budget = AllocationBudget {options, inputSizeInBytes};
 
     try
     {
-        load(result);
+        loadValue(LoadContext {result, budget});
+    }
+    catch (const AllocationOverBudget&)
+    {
+        result.status = LoadStatus::OverBudget;
     }
     catch (const std::bad_alloc&)
     {
@@ -61,31 +68,31 @@ LoadResult runGuardedLoad(Load&& load)
 }
 
 template <typename T>
-void reflectFrom(T& value, const ReadStart& start, LoadResult& result)
+void reflectFrom(T& value, const ReadStart& start, const LoadContext& load)
 {
-    auto ref = Reader {start, Miro::Detail::topLevelOptions<T>(Mode::Load), result};
+    auto ref = Reader {start, Miro::Detail::topLevelOptions<T>(Mode::Load), load};
     Miro::Detail::reflectValue(ref, value);
 }
 
 template <typename T>
-void loadDocument(T& value, const Document& document, LoadResult& result)
+void loadDocument(T& value, const Document& document, const LoadContext& load)
 {
     if (!document.isValid())
     {
-        result.status = LoadStatus::Damaged;
+        load.result.status = LoadStatus::Damaged;
         return;
     }
 
     auto rootHeader =
         parseValueHeader(document.bytes(), document.getRootValueOffset());
-    reflectFrom(value, {.document = document, .header = rootHeader}, result);
+    reflectFrom(value, {.document = document, .header = rootHeader}, load);
 }
 
 template <typename Map>
 void replayJournalFrame(Map& value,
                         const JournalFrame& frame,
                         const Document& baseDocument,
-                        LoadResult& result)
+                        const LoadContext& load)
 {
     auto key = std::string {frame.key};
 
@@ -99,25 +106,28 @@ void replayJournalFrame(Map& value,
 
     if (!frameDocument.isValid())
     {
-        ++result.lostJournalFrameCount;
+        ++load.result.lostJournalFrameCount;
         return;
     }
 
     auto element = typename IsReplayableJournalMap<Map>::Value {};
-    loadDocument(element, frameDocument, result);
+    loadDocument(element, frameDocument, load);
+    load.budget.spend(1, sizeof(typename Map::value_type));
     value[key] = std::move(element);
 }
 
 // A type other than a map with string keys loads the base alone, and its
 // frames count as lost.
 template <typename T>
-void loadJournal(T& value, std::span<const std::uint8_t> data, LoadResult& result)
+void loadJournal(T& value,
+                 std::span<const std::uint8_t> data,
+                 const LoadContext& load)
 {
     const auto journalInfo = inspectJournal(data);
 
     if (!journalInfo.valid)
     {
-        result.status = LoadStatus::Damaged;
+        load.result.status = LoadStatus::Damaged;
         return;
     }
 
@@ -125,49 +135,50 @@ void loadJournal(T& value, std::span<const std::uint8_t> data, LoadResult& resul
 
     if (!baseDocument.isValid())
     {
-        result.status = LoadStatus::Damaged;
+        load.result.status = LoadStatus::Damaged;
         return;
     }
 
     auto tornFrameCount = std::size_t {journalInfo.truncated ? 1U : 0U};
-    result.lostJournalFrameCount = journalInfo.skippedFrameCount + tornFrameCount;
-    loadDocument(value, baseDocument, result);
+    load.result.lostJournalFrameCount =
+        journalInfo.skippedFrameCount + tornFrameCount;
+    loadDocument(value, baseDocument, load);
     auto frames = readJournalFrames(data);
 
     if constexpr (IsReplayableJournalMap<T>::value)
     {
         for (const auto& frame: frames)
-            replayJournalFrame(value, frame, baseDocument, result);
+            replayJournalFrame(value, frame, baseDocument, load);
     }
     else
     {
-        result.lostJournalFrameCount += frames.size();
+        load.result.lostJournalFrameCount += frames.size();
     }
 }
 
 template <typename T>
-void loadBytes(T& value, std::span<const std::uint8_t> data, LoadResult& result)
+void loadBytes(T& value, std::span<const std::uint8_t> data, const LoadContext& load)
 {
     if (isJournal(data))
-        loadJournal(value, data, result);
+        loadJournal(value, data, load);
     else if (isDocument(data))
-        loadDocument(value, Document {data}, result);
+        loadDocument(value, Document {data}, load);
     else
-        result.status = LoadStatus::NotCalderData;
+        load.result.status = LoadStatus::NotCalderData;
 }
 
 template <typename T>
 void loadPackedRecordView(T& value,
                           const Document& document,
                           const ViewPosition& position,
-                          LoadResult& result)
+                          const LoadContext& load)
 {
     auto layout = StoredPackedLayout {};
     auto arrayHeader = parseValueHeader(document.bytes(), position.valueOffset);
 
     if (!readStoredPackedLayout(document, arrayHeader, layout))
     {
-        result.status = LoadStatus::Damaged;
+        load.result.status = LoadStatus::Damaged;
         return;
     }
 
@@ -179,15 +190,15 @@ void loadPackedRecordView(T& value,
                 {.document = document,
                  .header = makePackedRecordHeader(recordOffset),
                  .packedRecord = slot},
-                result);
+                load);
 }
 
 template <typename T>
-void loadView(T& value, const View& view, LoadResult& result)
+void loadView(T& value, const View& view, const LoadContext& load)
 {
     if (!view.isValid())
     {
-        result.status = LoadStatus::ValueMissing;
+        load.result.status = LoadStatus::ValueMissing;
         return;
     }
 
@@ -195,12 +206,12 @@ void loadView(T& value, const View& view, LoadResult& result)
     const auto& position = ViewAccess::getPosition(view);
 
     if (position.elementEncoding == Encoding::PackedStruct)
-        loadPackedRecordView(value, document, position, result);
+        loadPackedRecordView(value, document, position, load);
     else
         reflectFrom(
             value,
             {.document = document, .header = readViewHeader(document, position)},
-            result);
+            load);
 }
 
 template <typename T>

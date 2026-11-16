@@ -18,6 +18,17 @@ enum class LoadStatus
     IsJournal, // File::open reads documents only; load a journal with loadFromFile
     Damaged, // cut short or inconsistent bytes, or nested too deep
     OutOfMemory,
+    OverBudget, // the value would take more memory than LoadOptions allows
+};
+
+struct LoadOptions
+{
+    static constexpr auto noAllocationLimit =
+        std::numeric_limits<std::size_t>::max();
+
+    // Memory a load may allocate for lists, maps and pointers. Unset: 64 times
+    // the input's size, and at least 64 MiB.
+    std::optional<std::size_t> maximumAllocationInBytes;
 };
 
 struct FieldProblem
@@ -25,9 +36,8 @@ struct FieldProblem
     enum class Kind
     {
         WrongType, // such as a string stored where the field is an int
-        // Such as 2^40 into an int, or 1000 into a list of std::int8_t. A lone
-        // field narrower than int or double is refused by Miro unreported.
-        NumberDidNotFit,
+        NumberDidNotFit, // such as 1000 into a std::int8_t, or 999 into an enum
+        NoSuchEnumerator, // an enum name the enum no longer has
     };
 
     std::string fieldPath; // "tracks[7].title"
@@ -37,7 +47,7 @@ struct FieldProblem
 struct LoadResult
 {
     // False: don't use the value. It is untouched, or partly loaded when the
-    // bytes broke partway through (Damaged, OutOfMemory).
+    // bytes broke partway through (Damaged, OutOfMemory, OverBudget).
     bool hasLoaded() const;
 
     // Not loaded, or a field was refused or missing, or journal frames were lost.
@@ -55,17 +65,23 @@ struct LoadResult
 template <typename T>
 std::vector<std::uint8_t> toBinary(const T& value);
 template <typename T>
-[[nodiscard]] std::optional<T> createFromBinary(const ByteRange auto& bytes);
+[[nodiscard]] std::optional<T> createFromBinary(const ByteRange auto& bytes,
+                                                const LoadOptions& options = {});
 template <typename T>
-[[nodiscard]] LoadResult fromBinary(T& value, const ByteRange auto& bytes);
+[[nodiscard]] LoadResult fromBinary(T& value,
+                                    const ByteRange auto& bytes,
+                                    const LoadOptions& options = {});
 
 // Files. Saving writes a temporary file, then renames it over the old one.
 template <typename T>
 [[nodiscard]] bool saveToFile(const T& value, const std::filesystem::path& file);
 template <typename T>
-[[nodiscard]] std::optional<T> createFromFile(const std::filesystem::path& file);
+[[nodiscard]] std::optional<T> createFromFile(const std::filesystem::path& file,
+                                              const LoadOptions& options = {});
 template <typename T>
-[[nodiscard]] LoadResult loadFromFile(T& value, const std::filesystem::path& file);
+[[nodiscard]] LoadResult loadFromFile(T& value,
+                                      const std::filesystem::path& file,
+                                      const LoadOptions& options = {});
 
 // Read part of a file without loading all of it. A View points into its File:
 // it, and the strings it returns, are valid while the File lives.
@@ -125,9 +141,11 @@ private:
 };
 
 template <typename T>
-[[nodiscard]] std::optional<T> createFromBinary(const View& view);
+[[nodiscard]] std::optional<T> createFromBinary(const View& view,
+                                                const LoadOptions& options = {});
 template <typename T>
-[[nodiscard]] LoadResult fromBinary(T& value, const View& view);
+[[nodiscard]] LoadResult
+    fromBinary(T& value, const View& view, const LoadOptions& options = {});
 
 // Append-only stores: a journal holds a map, and each change appends one
 // small frame instead of rewriting the file. One writer per journal at a time.
