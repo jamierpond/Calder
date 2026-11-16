@@ -1,7 +1,7 @@
 #pragma once
 
 // Entry header: the binary serialization layer — the compact "MIB1"
-// wire format (Calder::Writer / Document / View) plus the
+// wire format (Detail::ByteWriter / Document / View) plus the
 // reflection serializers toBinary / fromBinary / createFromBinary.
 
 #include "Binary.h"

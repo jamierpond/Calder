@@ -37,7 +37,7 @@ void loadValidDocument(T& value,
                        const CustomOptions& custom,
                        BinaryLoadReport& report)
 {
-    auto ref = BinaryReaderReflector {
+    auto ref = Reader {
         document,
         Calder::Detail::parseValueHeader(document.bytes(),
                                          document.getRootValueOffset()),
@@ -115,14 +115,13 @@ namespace Detail
 {
 
 template <typename T>
-void writeReflectedValue(Calder::Writer& writer,
+void writeReflectedValue(Detail::ByteWriter& writer,
                          const T& value,
                          CustomOptions custom)
 {
-    auto ref =
-        BinaryWriterReflector {writer,
-                               Miro::Detail::topLevelOptions<T>(
-                                   Mode::Save, /*schema=*/false, std::move(custom))};
+    auto ref = Writer {writer,
+                       Miro::Detail::topLevelOptions<T>(
+                           Mode::Save, /*schema=*/false, std::move(custom))};
     Miro::Detail::reflectValue(ref, const_cast<T&>(value));
 }
 
@@ -131,7 +130,7 @@ void writeReflectedValue(Calder::Writer& writer,
 template <typename T>
 Calder::Buffer toBinary(const T& value, CustomOptions custom = {})
 {
-    auto writer = Calder::Writer {};
+    auto writer = Detail::ByteWriter {};
     Detail::writeReflectedValue(writer, value, std::move(custom));
     return writer.finishWithKeyTable();
 }
@@ -186,7 +185,7 @@ std::optional<Calder::Buffer>
                      Calder::InternedKeyTable& journalKeyTable,
                      CustomOptions custom = {})
 {
-    auto writer = Calder::Writer {journalKeyTable};
+    auto writer = Detail::ByteWriter {journalKeyTable};
     Detail::writeReflectedValue(writer, value, std::move(custom));
     auto frameValue = writer.finishJournalFrameValue();
 

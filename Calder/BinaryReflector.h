@@ -23,16 +23,16 @@ using Miro::Shape;
 using Miro::ValueKind;
 using Miro::Vector;
 
-// Streams a reflection walk straight into a Calder::Writer. Container
+// Streams a reflection walk straight into a Detail::ByteWriter. Container
 // slots write their tag and a placeholder size when they start and patch
 // it when they finish, which happens before the next sibling starts.
 // Each reflector keeps one child and restarts it for every field or
 // element, so a walk allocates one reflector per nesting depth. Save-only.
-class BinaryWriterReflector final : public Reflector
+class Writer final : public Reflector
 {
 public:
-    BinaryWriterReflector(Calder::Writer& writerToUse, Options optsToUse);
-    ~BinaryWriterReflector() override;
+    Writer(Detail::ByteWriter& writerToUse, Options optsToUse);
+    ~Writer() override;
 
     void visit(PrimitiveRef ref) override;
     bool visitPacked(PackedArrayRef ref) override;
@@ -77,10 +77,10 @@ private:
     void patchSizes();
     void discardPendingSlot();
 
-    Calder::Writer& writer;
+    Detail::ByteWriter& writer;
     SlotState slot;
 
-    OwningPointer<BinaryWriterReflector> reusableChild;
+    OwningPointer<Writer> reusableChild;
 };
 
 // A value whose stored type differs from the C++ field it loads into,
@@ -113,15 +113,15 @@ struct BinaryLoadReport
 // O(1) each. Like the writer, each reflector keeps one child and restarts
 // it for every field or element. Load-only; never throws: malformed input
 // reads as absent.
-class BinaryReaderReflector final : public Reflector
+class Reader final : public Reflector
 {
 public:
-    BinaryReaderReflector(const Calder::Document& documentToUse,
-                          const Calder::Detail::ValueHeader& headerToUse,
-                          Options optsToUse,
-                          BinaryLoadReport& reportToUse);
+    Reader(const Calder::Document& documentToUse,
+           const Calder::Detail::ValueHeader& headerToUse,
+           Options optsToUse,
+           BinaryLoadReport& reportToUse);
 
-    ~BinaryReaderReflector() override;
+    ~Reader() override;
 
     void visit(PrimitiveRef ref) override;
     bool visitPacked(PackedArrayRef ref) override;
@@ -141,10 +141,10 @@ private:
     using StepFromParent =
         std::variant<std::monostate, std::string_view, std::size_t>;
 
-    BinaryReaderReflector(const BinaryReaderReflector& parentToUse,
-                          StepFromParent stepToUse,
-                          const Calder::Detail::ValueHeader& headerToUse,
-                          Options optsToUse);
+    Reader(const Reader& parentToUse,
+           StepFromParent stepToUse,
+           const Calder::Detail::ValueHeader& headerToUse,
+           Options optsToUse);
 
     void restartSlot(StepFromParent stepToUse,
                      const Calder::Detail::ValueHeader& headerToUse,
@@ -169,14 +169,14 @@ private:
     const Calder::Document& document;
     Calder::Detail::ValueHeader header;
     BinaryLoadReport& report;
-    std::optional<std::reference_wrapper<const BinaryReaderReflector>> parent;
+    std::optional<std::reference_wrapper<const Reader>> parent;
     StepFromParent stepFromParent;
     bool hasReportedObjectMismatch = false;
 
     std::size_t resumeOffset = 0;
     std::size_t resumeElementIndex = 0;
 
-    OwningPointer<BinaryReaderReflector> reusableChild;
+    OwningPointer<Reader> reusableChild;
 };
 
 } // namespace Calder

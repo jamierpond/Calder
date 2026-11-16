@@ -193,10 +193,13 @@ inline constexpr int varintMaxShift = 64;
 // object keys. finishWithKeyTable() appends the key table and spends the
 // writer. Given a journal's key table, it writes a set frame's value
 // instead, and finishJournalFrameValue() spends it.
-class Writer
+namespace Detail
+{
+
+class ByteWriter
 {
 public:
-    Writer()
+    ByteWriter()
     {
         constexpr auto initialCapacity = std::size_t {1024};
         buffer.reserve(initialCapacity);
@@ -204,7 +207,7 @@ public:
         writeU32(0);
     }
 
-    explicit Writer(InternedKeyTable& journalKeyTableToUse)
+    explicit ByteWriter(InternedKeyTable& journalKeyTableToUse)
         : journalKeyTable(journalKeyTableToUse)
     {
         constexpr auto initialCapacity = std::size_t {256};
@@ -319,6 +322,8 @@ private:
     std::optional<std::reference_wrapper<InternedKeyTable>> journalKeyTable;
     bool hasMetKeyMissingFromJournal = false;
 };
+
+} // namespace Detail
 
 class Document;
 

@@ -1,6 +1,6 @@
 // Self-containment check: <Calder/Calder.h> must compile as the first
 // and only Miro include, and must supply the binary wire layer
-// (Writer / Document / View) plus toBinary / fromBinary.
+// (Document / View) plus toBinary / fromBinary.
 
 #include <Calder/Calder.h>
 
