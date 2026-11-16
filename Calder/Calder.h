@@ -25,7 +25,9 @@ struct FieldProblem
     enum class Kind
     {
         WrongType, // such as a string stored where the field is an int
-        NumberDidNotFit, // such as 2^40 stored, loaded into an int
+        // Such as 2^40 into an int, or 1000 into a list of std::int8_t. A lone
+        // field narrower than int or double is refused by Miro unreported.
+        NumberDidNotFit,
     };
 
     std::string fieldPath; // "tracks[7].title"
@@ -108,8 +110,10 @@ public:
     View getRoot() const& CALDER_LIFETIMEBOUND;
     View getRoot() const&& = delete; // no Views into a File that is about to go
 
-    File(File&& other) noexcept; // Views stay valid when a File moves
-    File& operator=(File&& other) noexcept;
+    // Views stay valid when a File moves. Assigning over a File would free
+    // the bytes its Views point into, so a File cannot be reassigned.
+    File(File&& other) noexcept;
+    File& operator=(File&& other) = delete;
     File(const File&) = delete;
     File& operator=(const File&) = delete;
     ~File();

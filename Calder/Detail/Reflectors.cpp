@@ -814,6 +814,7 @@ void Reader::restartSlot(StepFromParent stepToUse,
     resumeOffset = headerToUse.payloadOffset;
     resumeElementIndex = 0;
     packedRecord = packedRecordToUse;
+    packedResumeField = 0;
     hasReadStoredPackedLayout = false;
 }
 
@@ -880,7 +881,7 @@ bool Reader::visitPacked(PackedArrayRef ref)
     std::visit(
         [this](auto dest)
         {
-            auto reader = ByteReader {document.bytes(), header.payloadOffset};
+            auto reader = makeElementReader(document, header, header.payloadOffset);
             auto count = std::min(dest.size(), header.elementCount);
             countMissingElements(dest.size(), count);
             readPackedElements(reader,
@@ -922,6 +923,10 @@ bool Reader::visitPackedStructs(PackedStructArrayRef ref)
     const auto& layout = storedPackedLayout;
     auto count = std::min(ref.getElementCount(), layout.recordCount);
     countMissingElements(ref.getElementCount(), count);
+
+    if (count == 0)
+        return true;
+
     auto records =
         document.bytes().subspan(layout.recordsOffset, count * layout.recordSize);
 
@@ -1038,11 +1043,15 @@ Reflector& Reader::spawnPackedRecordChild(std::size_t index, Options&& childOpts
                                         .recordOffset = recordOffset});
 }
 
-std::optional<std::size_t>
-    Reader::findPackedFieldAtThisDepth(std::string_view key) const
+std::optional<std::size_t> Reader::findPackedFieldAtThisDepth(std::string_view key)
 {
-    return findPackedFieldAtDepth(
-        packedRecord->layout.get(), packedRecord->path, key);
+    auto fieldIndex = findPackedFieldAtDepth(
+        packedRecord->layout.get(), packedRecord->path, key, packedResumeField);
+
+    if (fieldIndex)
+        packedResumeField = *fieldIndex + 1;
+
+    return fieldIndex;
 }
 
 void Reader::appendPackedRecordKeys(Vector<std::string>& keys) const
@@ -1153,7 +1162,7 @@ Reflector& Reader::atIndex(std::size_t index, Options childOpts)
 
     rewindResumeOffsetIfPast(index);
 
-    auto reader = ByteReader {document.bytes(), resumeOffset};
+    auto reader = makeElementReader(document, header, resumeOffset);
     auto skipped = skipElements(reader, header.encoding, index - resumeElementIndex);
 
     if (!skipped || reader.readOffsetInBytes >= header.payloadEndOffset)

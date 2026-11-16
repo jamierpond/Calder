@@ -80,11 +80,41 @@ void JournalWriterState::readBase(std::span<const std::uint8_t> journal)
 
 bool JournalWriterState::appendFrame(std::span<const std::uint8_t> frame)
 {
+    auto error = std::error_code {};
+    auto sizeBeforeAppend = std::filesystem::file_size(path, error);
+
+    if (error)
+    {
+        status = LoadStatus::FileMissing;
+        return false;
+    }
+
+    if (writeFrameAtEnd(frame))
+        return true;
+
+    cutBackTo(sizeBeforeAppend);
+    return false;
+}
+
+bool JournalWriterState::writeFrameAtEnd(std::span<const std::uint8_t> frame) const
+{
     auto stream = std::ofstream {path, std::ios::binary | std::ios::app};
     stream.write(reinterpret_cast<const char*>(frame.data()),
                  static_cast<std::streamsize>(frame.size()));
     stream.close();
     return !stream.fail();
+}
+
+// Part of a frame may have reached the file. Later frames appended after it
+// would be lost behind a torn frame, so the writer stops if it cannot cut
+// the part off.
+void JournalWriterState::cutBackTo(std::uintmax_t sizeInBytes)
+{
+    auto error = std::error_code {};
+    std::filesystem::resize_file(path, sizeInBytes, error);
+
+    if (error)
+        status = LoadStatus::Damaged;
 }
 
 bool JournalWriterState::addKeysToBase(const std::vector<std::string>& keys)

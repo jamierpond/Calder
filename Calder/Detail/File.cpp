@@ -1,7 +1,6 @@
 #include "../Calder.h"
 
 #include <fstream>
-#include <random>
 #include <system_error>
 
 #if !defined(_WIN32)
@@ -31,24 +30,6 @@ LoadStatus findFileStatus(std::span<const std::uint8_t> bytes,
         return LoadStatus::Damaged;
 
     return LoadStatus::Loaded;
-}
-
-std::filesystem::path makeTemporaryPathBeside(const std::filesystem::path& file)
-{
-    auto randomSuffix = std::random_device {}();
-    auto temporary = file;
-    temporary += ".tmp-" + std::to_string(randomSuffix);
-    return temporary;
-}
-
-bool writeWholeFile(const std::filesystem::path& file,
-                    std::span<const std::uint8_t> bytes)
-{
-    auto stream = std::ofstream {file, std::ios::binary | std::ios::trunc};
-    stream.write(reinterpret_cast<const char*>(bytes.data()),
-                 static_cast<std::streamsize>(bytes.size()));
-    stream.close();
-    return !stream.fail();
 }
 
 } // namespace
@@ -156,23 +137,6 @@ FileState::FileState(FileBytes bytesToUse)
 {
 }
 
-bool writeFileAtomically(const std::filesystem::path& file,
-                         std::span<const std::uint8_t> bytes)
-{
-    auto temporary = makeTemporaryPathBeside(file);
-    auto error = std::error_code {};
-
-    if (writeWholeFile(temporary, bytes))
-        std::filesystem::rename(temporary, file, error);
-    else
-        error = std::make_error_code(std::errc::io_error);
-
-    if (error)
-        std::filesystem::remove(temporary, error);
-
-    return !error;
-}
-
 } // namespace Detail
 
 File::File(std::unique_ptr<Detail::FileState> stateToUse)
@@ -181,7 +145,6 @@ File::File(std::unique_ptr<Detail::FileState> stateToUse)
 }
 
 File::File(File&& other) noexcept = default;
-File& File::operator=(File&& other) noexcept = default;
 File::~File() = default;
 
 File File::open(const std::filesystem::path& file)

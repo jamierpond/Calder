@@ -66,7 +66,7 @@ View findPackedRecordField(const Document& document,
     if (!layout)
         return {};
 
-    auto fieldIndex = findPackedFieldAtDepth(*layout, record.packedPath, key);
+    auto fieldIndex = findPackedFieldAtDepth(*layout, record.packedPath, key, 0);
 
     if (!fieldIndex)
         return {};
@@ -246,7 +246,7 @@ View View::operator[](std::size_t index) const
     if (header.encoding == Encoding::PackedStruct)
         return Detail::findPackedRecord(document, header, index);
 
-    auto reader = Detail::ByteReader {document.get().bytes(), header.payloadOffset};
+    auto reader = Detail::makeElementReader(document, header, header.payloadOffset);
 
     if (!Detail::skipElements(reader, header.encoding, index)
         || reader.readOffsetInBytes >= header.payloadEndOffset)

@@ -30,6 +30,8 @@ private:
     void openExisting(std::span<const std::uint8_t> bytes);
     void openJournal(std::span<const std::uint8_t> bytes);
     void readBase(std::span<const std::uint8_t> journal);
+    bool writeFrameAtEnd(std::span<const std::uint8_t> frame) const;
+    void cutBackTo(std::uintmax_t sizeInBytes);
 
     std::filesystem::path path;
     LoadStatus status = LoadStatus::Loaded;

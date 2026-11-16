@@ -25,6 +25,7 @@ add_library(calder STATIC
         Calder/Detail/Reflectors.cpp
         Calder/Detail/View.cpp
         Calder/Detail/File.cpp
+        Calder/Detail/AtomicWrite.cpp
         Calder/Detail/JournalWriter.cpp)
 
 target_include_directories(calder PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

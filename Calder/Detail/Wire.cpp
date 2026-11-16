@@ -555,6 +555,14 @@ ValueHeader makePackedElementHeader(Encoding encoding, std::size_t elementOffset
     return header;
 }
 
+ByteReader makeElementReader(const Document& document,
+                             const ValueHeader& array,
+                             std::size_t fromOffset)
+{
+    auto payloadEnd = std::min(array.payloadEndOffset, document.bytes().size());
+    return ByteReader {document.bytes().first(payloadEnd), fromOffset};
+}
+
 ValueHeader makePackedRecordHeader(std::size_t recordOffset)
 {
     auto header = ValueHeader {};
@@ -595,6 +603,12 @@ Encoding getEncoding(PackedFieldType type)
 namespace
 {
 
+std::size_t countBytesLeft(const ByteReader& reader)
+{
+    auto size = reader.bytesToRead.size();
+    return size - std::min(reader.readOffsetInBytes, size);
+}
+
 bool readStoredPackedField(const Document& document,
                            ByteReader& reader,
                            StoredPackedLayout& layout)
@@ -602,7 +616,7 @@ bool readStoredPackedField(const Document& document,
     auto pathLength = reader.readVarint();
 
     // Each segment takes at least one byte, which bounds a corrupt length.
-    if (pathLength == 0 || pathLength > reader.bytesToRead.size())
+    if (pathLength == 0 || pathLength > countBytesLeft(reader))
         return false;
 
     auto field = StoredPackedField {.firstPathSegment = layout.pathSegments.size(),
@@ -645,7 +659,7 @@ bool readStoredPackedLayout(const Document& document,
                               header.payloadOffset};
     auto fieldCount = reader.readVarint();
 
-    if (fieldCount == 0 || fieldCount > reader.bytesToRead.size())
+    if (fieldCount == 0 || fieldCount > countBytesLeft(reader))
         return false;
 
     for (auto i = std::uint64_t {0}; i < fieldCount; ++i)
@@ -673,6 +687,11 @@ bool startsWithPrefix(std::span<const std::string_view> path,
            && std::ranges::equal(path.first(depth), prefix.first(depth));
 }
 
+bool isLastKey(const std::vector<std::string_view>& keys, std::string_view key)
+{
+    return !keys.empty() && keys.back() == key;
+}
+
 std::span<const std::string_view> getPathPrefix(const StoredPackedLayout& layout,
                                                 const PackedPathPrefix& prefix)
 {
@@ -686,17 +705,19 @@ std::span<const std::string_view> getPathPrefix(const StoredPackedLayout& layout
 
 std::optional<std::size_t> findPackedFieldAtDepth(const StoredPackedLayout& layout,
                                                   const PackedPathPrefix& place,
-                                                  std::string_view key)
+                                                  std::string_view key,
+                                                  std::size_t firstFieldToTry)
 {
     auto prefix = getPathPrefix(layout, place);
-    auto depth = place.depth;
+    auto fieldCount = layout.fields.size();
 
-    for (auto i = std::size_t {0}; i < layout.fields.size(); ++i)
+    for (auto step = std::size_t {0}; step < fieldCount; ++step)
     {
-        auto path = layout.getPath(layout.fields[i]);
+        auto fieldIndex = (firstFieldToTry + step) % fieldCount;
+        auto path = layout.getPath(layout.fields[fieldIndex]);
 
-        if (startsWithPrefix(path, prefix, depth) && path[depth] == key)
-            return i;
+        if (startsWithPrefix(path, prefix, place.depth) && path[place.depth] == key)
+            return fieldIndex;
     }
 
     return std::nullopt;
@@ -709,12 +730,13 @@ std::vector<std::string_view> listPackedKeysAtDepth(const StoredPackedLayout& la
     auto depth = place.depth;
     auto keys = std::vector<std::string_view> {};
 
+    // The writer stores the fields of one nested struct next to each other,
+    // so comparing with the previous key is enough to list each once.
     for (const auto& field: layout.fields)
     {
         auto path = layout.getPath(field);
 
-        if (startsWithPrefix(path, prefix, depth)
-            && std::ranges::find(keys, path[depth]) == keys.end())
+        if (startsWithPrefix(path, prefix, depth) && !isLastKey(keys, path[depth]))
             keys.push_back(path[depth]);
     }
 

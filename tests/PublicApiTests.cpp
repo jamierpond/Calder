@@ -5,15 +5,22 @@
 
 #include "CalderTestHelpers.h"
 #include <Calder/Calder.h>
+#include <Miro/Json.h>
 
 #include <NanoTest/NanoTest.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <random>
+
+#if defined(__linux__)
+    #include <csignal>
+    #include <sys/resource.h>
+#endif
 #include <string>
 #include <vector>
 
@@ -108,6 +115,35 @@ struct Numbers
     MIRO_REFLECT(values)
 
     std::vector<int> values;
+};
+
+struct SmallSigned
+{
+    MIRO_REFLECT(values)
+
+    std::vector<std::int8_t> values;
+};
+
+struct WideSigned
+{
+    MIRO_REFLECT(values)
+
+    std::vector<int> values;
+};
+
+struct ListThenCount
+{
+    MIRO_REFLECT(list, count)
+
+    std::vector<int> list;
+    int count = 0;
+};
+
+struct Samples
+{
+    MIRO_REFLECT(values)
+
+    std::vector<float> values;
 };
 
 struct Tree
@@ -224,14 +260,87 @@ Buffer makeDeeplyNestedTree(int depth)
     return document;
 }
 
+void appendVarint(Buffer& bytes, std::uint64_t value)
+{
+    constexpr auto continuationBit = std::uint8_t {0x80};
+    constexpr auto bitsPerVarintByte = 7;
+
+    while (value >= continuationBit)
+    {
+        bytes.push_back(static_cast<std::uint8_t>(value) | continuationBit);
+        value >>= bitsPerVarintByte;
+    }
+
+    bytes.push_back(static_cast<std::uint8_t>(value));
+}
+
+// A document whose root object holds `fields` under key id 0, then a key
+// table of the given names.
+Buffer makeDocument(const Buffer& fields, const std::vector<std::string>& keyNames)
+{
+    auto object = Buffer {static_cast<std::uint8_t>(Calder::Detail::Tag::Object)};
+    appendU32(object, static_cast<std::uint32_t>(fields.size()));
+    object.insert(object.end(), fields.begin(), fields.end());
+
+    auto document = Buffer {'C', 'L', 'D', '1'};
+    appendU32(
+        document,
+        static_cast<std::uint32_t>(Calder::Detail::headerSize + object.size()));
+    document.insert(document.end(), object.begin(), object.end());
+    appendVarint(document, keyNames.size());
+
+    for (const auto& name: keyNames)
+    {
+        appendVarint(document, name.size());
+        document.insert(document.end(), name.begin(), name.end());
+    }
+
+    return document;
+}
+
+// {"p": [one record]} where the record has `fieldCount` one-byte fields,
+// each named by its own key.
+Buffer makeWidePackedRecord(std::size_t fieldCount)
+{
+    auto layout = Buffer {};
+    appendVarint(layout, fieldCount);
+
+    for (auto field = std::size_t {0}; field < fieldCount; ++field)
+    {
+        constexpr auto pathLength = 1;
+        appendVarint(layout, pathLength);
+        appendVarint(layout, field + 1);
+        layout.push_back(
+            static_cast<std::uint8_t>(Calder::Detail::PackedFieldType::UInt8));
+    }
+
+    constexpr auto recordCount = 1;
+    auto payload = Buffer {};
+    appendU32(payload, recordCount);
+    payload.insert(payload.end(), layout.begin(), layout.end());
+    payload.insert(payload.end(), fieldCount, std::uint8_t {7});
+
+    auto fields = Buffer {
+        0, static_cast<std::uint8_t>(Calder::Detail::Tag::PackedStructArray)};
+    appendU32(fields, static_cast<std::uint32_t>(payload.size()));
+    fields.insert(fields.end(), payload.begin(), payload.end());
+
+    auto keyNames = std::vector<std::string> {"p"};
+
+    for (auto field = std::size_t {0}; field < fieldCount; ++field)
+        keyNames.push_back("f" + std::to_string(field));
+
+    return makeDocument(fields, keyNames);
+}
+
 template <typename T>
 concept CanTakeRoot = requires(T&& file) { std::forward<T>(file).getRoot(); };
 
-View getRootOfMovedFile(File& destination)
+View getRootOfMovedFile(std::optional<File>& destination)
 {
     auto source = File::fromBytes(toBinary(Enemy {42, "boss"}));
     auto root = source.getRoot();
-    destination = std::move(source);
+    destination.emplace(std::move(source));
     return root;
 }
 
@@ -242,6 +351,8 @@ View getRootOfMovedFile(File& destination)
 static_assert(!CanTakeRoot<File>, "a View into a temporary File must not compile");
 static_assert(CanTakeRoot<File&>);
 static_assert(!std::is_copy_constructible_v<File>);
+static_assert(!std::is_move_assignable_v<File>,
+              "assigning would free bytes Views read");
 static_assert(ByteRange<std::string>);
 static_assert(ByteRange<std::vector<char>>);
 static_assert(ByteRange<std::span<const std::byte>>);
@@ -315,6 +426,18 @@ auto numberThatDoesNotFitIsReported =
     check(narrow.count == 3);
     check(result.fieldProblemCount == 1);
     check(result.fieldProblems.at(0).fieldPath == "count");
+    check(result.fieldProblems.at(0).kind == FieldProblem::Kind::NumberDidNotFit);
+};
+
+auto packedNumberThatDoesNotFitIsReported =
+    test("Public API: a number too big for a packed list element is reported") = []
+{
+    constexpr auto tooBigForInt8 = 1000;
+    auto loaded = SmallSigned {};
+    auto result = fromBinary(loaded, toBinary(WideSigned {{1, tooBigForInt8}}));
+
+    check(result.fieldProblemCount == 1);
+    check(result.fieldProblems.at(0).fieldPath == "values[1]");
     check(result.fieldProblems.at(0).kind == FieldProblem::Kind::NumberDidNotFit);
 };
 
@@ -450,7 +573,7 @@ auto viewTypeQueries =
 auto movingFileKeepsViews =
     test("Public API: Views stay valid when their File moves") = []
 {
-    auto destination = File::fromBytes({});
+    auto destination = std::optional<File> {};
     auto root = getRootOfMovedFile(destination);
 
     check(root["hp"].asInteger() == 42);
@@ -611,7 +734,153 @@ auto journalIntoNonMapLosesFrames = test(
     check(enemy.name == "base");
 };
 
+auto emptyListsRoundTrip = test("Public API: empty lists save and load") = []
+{
+    auto mesh = createFromBinary<Mesh>(toBinary(Mesh {"empty", {}}));
+    auto samples = createFromBinary<Samples>(toBinary(Samples {}));
+
+    check(mesh.has_value() && mesh->positions.empty());
+    check(samples.has_value() && samples->values.empty());
+};
+
+#if !defined(_WIN32)
+auto saveKeepsPermissions =
+    test("Public API: saveToFile keeps the replaced file's permissions") = []
+{
+    auto directory = TemporaryDirectory {};
+    auto file = directory.getFile("private.calder");
+    check(saveToFile(Enemy {}, file));
+
+    constexpr auto ownerOnly =
+        std::filesystem::perms::owner_read | std::filesystem::perms::owner_write;
+    std::filesystem::permissions(file, ownerOnly);
+    check(saveToFile(Enemy {1, "again"}, file));
+
+    check(std::filesystem::status(file).permissions() == ownerOnly);
+    check(createFromFile<Enemy>(file)->name == "again");
+};
+#endif
+
+#if defined(__linux__)
+// Caps the size of files this process may write, so an append fails partway
+// as it would on a full disk.
+class FileSizeLimit
+{
+public:
+    explicit FileSizeLimit(rlim_t largestFileSize)
+    {
+        getrlimit(RLIMIT_FSIZE, &previousLimit);
+        previousHandler = std::signal(SIGXFSZ, SIG_IGN);
+        auto limit = previousLimit;
+        limit.rlim_cur = largestFileSize;
+        setrlimit(RLIMIT_FSIZE, &limit);
+    }
+
+    ~FileSizeLimit()
+    {
+        setrlimit(RLIMIT_FSIZE, &previousLimit);
+        std::signal(SIGXFSZ, previousHandler);
+    }
+
+private:
+    rlimit previousLimit {};
+    void (*previousHandler)(int) = nullptr;
+};
+
+auto failedAppendLeavesJournalIntact =
+    test("Public API: a failed journal append leaves no part of its frame") = []
+{
+    auto directory = TemporaryDirectory {};
+    auto path = directory.getFile("store.calder");
+    auto journal = JournalWriter::open(path);
+    check(journal.appendSet("a", Enemy {1, "a"}));
+
+    constexpr auto bytesOfRoomLeft = 4;
+    auto sizeBefore = std::filesystem::file_size(path);
+
+    {
+        auto limit =
+            FileSizeLimit {static_cast<rlim_t>(sizeBefore + bytesOfRoomLeft)};
+        check(!journal.appendSet("b", Enemy {2, std::string(64, 'b')}));
+    }
+
+    check(std::filesystem::file_size(path) == sizeBefore);
+    check(journal.appendSet("c", Enemy {3, "c"}));
+
+    auto loaded = std::map<std::string, Enemy> {};
+    auto result = loadFromFile(loaded, path);
+    check(result.lostJournalFrameCount == 0);
+    check(loaded.size() == 2 && loaded.contains("c"));
+};
+#endif
+
 // --- Crafted input ---
+
+auto oversizedPackedIntegerCountIsDamaged =
+    test("Public API: a packed integer list longer than its payload is Damaged") = []
+{
+    constexpr auto listKeyId = std::uint8_t {0};
+    constexpr auto countKeyId = std::uint8_t {1};
+    constexpr auto claimedCount = 2;
+    constexpr auto storedCount = 9;
+    auto list = Buffer {0x80, 0x01};
+
+    auto fields = Buffer {
+        listKeyId, static_cast<std::uint8_t>(Calder::Detail::Tag::PackedInt32)};
+    appendU32(fields,
+              static_cast<std::uint32_t>(sizeof(std::uint32_t) + list.size()));
+    appendU32(fields, claimedCount);
+    fields.insert(fields.end(), list.begin(), list.end());
+    fields.push_back(countKeyId);
+    fields.push_back(static_cast<std::uint8_t>(Calder::Detail::Tag::Int));
+    appendVarint(fields, storedCount * 2);
+
+    auto loaded = ListThenCount {};
+    auto result = fromBinary(loaded, makeDocument(fields, {"list", "count"}));
+
+    check(result.status == LoadStatus::Damaged);
+    check(loaded.count == storedCount);
+};
+
+auto arrayCountBeyondItsBytesIsDamaged =
+    test("Public API: an array claiming more elements than bytes is Damaged") = []
+{
+    constexpr auto claimedCount = 1000000;
+    constexpr auto nullCount = 10;
+    auto nulls =
+        Buffer(nullCount, static_cast<std::uint8_t>(Calder::Detail::Tag::Null));
+
+    auto fields = Buffer {0, static_cast<std::uint8_t>(Calder::Detail::Tag::Array)};
+    appendU32(fields,
+              static_cast<std::uint32_t>(sizeof(std::uint32_t) + nulls.size()));
+    appendU32(fields, claimedCount);
+    fields.insert(fields.end(), nulls.begin(), nulls.end());
+
+    auto loaded = Mesh {};
+    auto result = fromBinary(loaded, makeDocument(fields, {"positions"}));
+
+    check(result.status == LoadStatus::Damaged);
+    check(loaded.positions.empty());
+};
+
+auto widePackedRecordLoadsInLinearTime = test(
+    "Public API: a packed record with 40,000 fields loads in well under a second") =
+    []
+{
+    constexpr auto fieldCount = std::size_t {40000};
+    constexpr auto timeLimit = std::chrono::seconds {2};
+    auto bytes = makeWidePackedRecord(fieldCount);
+    auto start = std::chrono::steady_clock::now();
+
+    auto loaded = Miro::JSON {};
+    auto result = fromBinary(loaded, bytes);
+    auto file = File::fromBytes(bytes);
+    auto keys = file.getRoot()["p"][0].getKeys();
+
+    check(std::chrono::steady_clock::now() - start < timeLimit);
+    check(result.hasLoaded());
+    check(keys.size() == fieldCount);
+};
 
 auto deepNestingIsDamaged =
     test("Public API: nesting 10,000 levels deep is Damaged") = []

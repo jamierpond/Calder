@@ -571,10 +571,13 @@ bool readStoredPackedLayout(const Document& document,
                             const ValueHeader& header,
                             StoredPackedLayout& layout);
 
-// The field whose path continues `place` with `key`.
+// The field whose path continues `place` with `key`. The search starts at
+// `firstFieldToTry` and wraps around, so keys read in layout order cost one
+// step each.
 std::optional<std::size_t> findPackedFieldAtDepth(const StoredPackedLayout& layout,
                                                   const PackedPathPrefix& place,
-                                                  std::string_view key);
+                                                  std::string_view key,
+                                                  std::size_t firstFieldToTry);
 
 // The distinct path segments that follow `place`, in layout order.
 std::vector<std::string_view> listPackedKeysAtDepth(const StoredPackedLayout& layout,
@@ -583,6 +586,13 @@ std::vector<std::string_view> listPackedKeysAtDepth(const StoredPackedLayout& la
 std::optional<PackedFieldType> findPackedFieldType(std::uint8_t wireByte);
 std::optional<PackedFieldType> findPackedFieldType(Encoding encoding);
 Encoding getEncoding(PackedFieldType type);
+
+// Reads the elements of `array` from `fromOffset`, stopping at the end of
+// its payload: a corrupt count or element then runs out of bounds instead of
+// reading into the next value.
+ByteReader makeElementReader(const Document& document,
+                             const ValueHeader& array,
+                             std::size_t fromOffset);
 
 // One record of a PackedStructArray, read as an object whose fields come
 // from the stored layout.

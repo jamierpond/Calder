@@ -119,6 +119,7 @@ struct ReadStart
     std::reference_wrapper<const Document> document;
     ValueHeader header;
     std::optional<PackedRecordSlot> packedRecord;
+    std::size_t packedResumeField = 0;
 };
 
 // Loads straight from the encoded bytes. Objects and arrays keep a
@@ -168,8 +169,7 @@ private:
                           std::optional<PackedRecordSlot> childPackedRecord = {});
     Reflector& spawnPackedRecordChild(std::size_t index, Options&& childOpts);
     Reflector& spawnPackedFieldChild(std::string_view key, Options&& childOpts);
-    std::optional<std::size_t>
-        findPackedFieldAtThisDepth(std::string_view key) const;
+    std::optional<std::size_t> findPackedFieldAtThisDepth(std::string_view key);
     void appendPackedRecordKeys(Vector<std::string>& keys) const;
     bool readStoredPackedLayoutOnce();
     Reflector& spawnMissingChild(StepFromParent step, Options&& childOpts);
@@ -209,6 +209,7 @@ private:
     std::size_t resumeElementIndex = 0;
 
     std::optional<PackedRecordSlot> packedRecord;
+    std::size_t packedResumeField = 0;
     StoredPackedLayout storedPackedLayout;
     bool hasReadStoredPackedLayout = false;
     bool isStoredPackedLayoutValid = false;

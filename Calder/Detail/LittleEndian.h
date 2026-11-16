@@ -122,6 +122,9 @@ template <FixedWidthNumber T>
 void decodeLittleEndianElements(std::span<const std::uint8_t> bytes,
                                 std::span<T> dest)
 {
+    if (dest.empty())
+        return;
+
     if constexpr (std::endian::native == std::endian::little)
         std::memcpy(dest.data(), bytes.data(), dest.size_bytes());
     else
