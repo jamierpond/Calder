@@ -1,3 +1,4 @@
+#include "CalderTestHelpers.h"
 #include <Calder/Calder.h>
 #include <Miro/Json.h>
 #include <Miro/Reflect.h>
@@ -12,6 +13,7 @@
 using namespace nano;
 using namespace Miro;
 using namespace Calder;
+using namespace CalderTestHelpers;
 
 namespace PackedStructArrayTestTypes
 {
@@ -257,8 +259,9 @@ auto vectorOfStructsRoundTrips =
     auto path = Path {{{1.0f, 2.0f, 3.0f}, {-4.5f, 0.0f, 1e9f}, {}}};
     auto bytes = toBinary(path);
 
-    check(createFromBinary<Path>(bytes) == path);
-    check(Calder::Document {bytes}.root()["points"].size() == path.points.size());
+    check(createFromBinary<Path>(bytes).value() == path);
+    auto file = File::fromBytes(bytes);
+    check(file.getRoot()["points"].getSize() == path.points.size());
 };
 
 auto packedIsSmallerThanObjects =
@@ -280,14 +283,14 @@ auto nestedStructsRoundTrip =
 {
     auto track = makeTrack();
 
-    check(createFromBinary<Track>(toBinary(track)) == track);
+    check(createFromBinary<Track>(toBinary(track)).value() == track);
 };
 
 auto layoutMismatchMatchesByName =
     test("Packed struct arrays: a changed layout loads field by field by name") = []
 {
     auto path = Path {{{1.0f, 2.0f, 3.0f}, {4.0f, 5.0f, 6.0f}}};
-    auto loaded = createFromBinary<ReorderedCloud>(toBinary(path));
+    auto loaded = createFromBinary<ReorderedCloud>(toBinary(path)).value();
 
     check(loaded.points.size() == 2);
     check(loaded.points[1].x == 4.0f);
@@ -301,7 +304,7 @@ auto typeChangeConvertsWithRangeChecks =
 {
     constexpr auto countPastInt16 = 70000;
     auto saved = SavedSamples {{{0.5f, 5}, {0.25f, countPastInt16}}};
-    auto loaded = createFromBinary<LoadedSamples>(toBinary(saved));
+    auto loaded = createFromBinary<LoadedSamples>(toBinary(saved)).value();
 
     check(loaded.samples.size() == 2);
     check(loaded.samples[0].level == 0.5);
@@ -316,7 +319,7 @@ auto fixedArrayRoundTrips =
     auto triangle =
         Triangle {{Vec3 {1.0f, 0.0f, 0.0f}, Vec3 {0.0f, 1.0f, 0.0f}, Vec3 {}}};
 
-    check(createFromBinary<Triangle>(toBinary(triangle)) == triangle);
+    check(createFromBinary<Triangle>(toBinary(triangle)).value() == triangle);
 };
 
 auto paddedStructSkipsPadding =
@@ -329,14 +332,14 @@ auto paddedStructSkipsPadding =
     auto two = PaddedWeights {{{1, 0.5f}, {200, -2.0f}}};
 
     check(toBinary(two).size() - toBinary(one).size() == recordBytes);
-    check(createFromBinary<PaddedWeights>(toBinary(two)) == two);
+    check(createFromBinary<PaddedWeights>(toBinary(two)).value() == two);
 };
 
 auto packedLoadsIntoUnpackableType = test(
     "Packed struct arrays: records load into a type that can't pack, by name") = []
 {
     auto path = Path {{{1.0f, 2.0f, 3.0f}, {4.0f, 5.0f, 6.0f}}};
-    auto loaded = createFromBinary<LabelledPath>(toBinary(path));
+    auto loaded = createFromBinary<LabelledPath>(toBinary(path)).value();
 
     check(loaded.points.size() == 2);
     check(loaded.points[1].y == 5.0f);
@@ -347,7 +350,7 @@ auto nestedRecordsLoadIntoUnpackableType = test(
     "Packed struct arrays: nested record fields load into an unpackable type") = []
 {
     auto track = makeTrack();
-    auto loaded = createFromBinary<NamedTrack>(toBinary(track));
+    auto loaded = createFromBinary<NamedTrack>(toBinary(track)).value();
 
     check(loaded.keys.size() == track.keys.size());
     check(loaded.keys[2].time == 3.0f);
@@ -363,8 +366,9 @@ auto objectArraysLoadIntoPackableType = test(
         LabelledPath {{{1.0f, 2.0f, 3.0f, "a"}, {4.0f, 5.0f, 6.0f, "b"}}};
     auto bytes = toBinary(labelled);
 
-    check(Calder::Document {bytes}.root()["points"][0].isObject());
-    check(createFromBinary<Path>(bytes)
+    auto file = File::fromBytes(bytes);
+    check(file.getRoot()["points"][0].isObject());
+    check(createFromBinary<Path>(bytes).value()
           == Path {{{1.0f, 2.0f, 3.0f}, {4.0f, 5.0f, 6.0f}}});
 };
 
@@ -372,7 +376,7 @@ auto rawJsonSeesObjects =
     test("Packed struct arrays: a raw JSON load sees an array of objects") = []
 {
     auto track = makeTrack();
-    auto json = createFromBinary<JSON>(toBinary(track));
+    auto json = createFromBinary<JSON>(toBinary(track)).value();
 
     check(Json::print(json) == toJSONString(track));
 };
@@ -381,7 +385,7 @@ auto missingFieldKeepsDefault = test(
     "Packed struct arrays: a field the stored layout lacks keeps its default") = []
 {
     auto saved = SavedSamples {{{0.5f, 3}}};
-    auto loaded = createFromBinary<ExtendedSamples>(toBinary(saved));
+    auto loaded = createFromBinary<ExtendedSamples>(toBinary(saved)).value();
 
     check(loaded.samples.size() == 1);
     check(loaded.samples[0].level == 0.5f);
@@ -397,22 +401,23 @@ auto corruptRecordsNeverCrash = test(
 
     for (auto length = std::size_t {0}; length < bytes.size(); ++length)
     {
-        auto truncated = Calder::Buffer(bytes.begin(), bytes.begin() + length);
-        createFromBinary<Track>(truncated);
-        createFromBinary<NamedTrack>(truncated);
-        createFromBinary<JSON>(truncated);
+        auto truncated =
+            Calder::Detail::Buffer(bytes.begin(), bytes.begin() + length);
+        loadIgnoringProblems<Track>(truncated);
+        loadIgnoringProblems<NamedTrack>(truncated);
+        loadIgnoringProblems<JSON>(truncated);
     }
 
     for (auto position = std::size_t {0}; position < bytes.size(); ++position)
     {
         auto flipped = bytes;
         flipped[position] = static_cast<std::uint8_t>(~flipped[position]);
-        createFromBinary<Track>(flipped);
-        createFromBinary<NamedTrack>(flipped);
-        createFromBinary<JSON>(flipped);
+        loadIgnoringProblems<Track>(flipped);
+        loadIgnoringProblems<NamedTrack>(flipped);
+        loadIgnoringProblems<JSON>(flipped);
     }
 
-    check(createFromBinary<Track>(bytes) == makeTrack());
+    check(createFromBinary<Track>(bytes).value() == makeTrack());
 };
 
 auto externalStructsPack = test(
@@ -431,19 +436,18 @@ auto journalFramesCarryPackedRecords =
     test("Packed struct arrays: a journal set frame writes and replays them") = []
 {
     auto base = std::map<std::string, Track> {{"a", makeTrack()}};
-    auto journal = toBinaryJournal(base);
-    auto keyTable = Calder::readJournalKeyTable(journal);
+    auto journal = makeJournalOf(base);
+    auto keyTable = Calder::Detail::readJournalKeyTable(journal);
     constexpr auto changedTime = 9.0f;
     auto changed = makeTrack();
     changed.keys.front().time = changedTime;
 
-    auto frame = binaryJournalSet("b", changed, keyTable);
-    check(frame.has_value());
+    auto frame = Calder::Detail::makeJournalSetFrame("b", changed, keyTable);
+    check(frame.hasFrame());
 
-    auto bytes = journal;
-    bytes.insert(bytes.end(), frame->begin(), frame->end());
+    auto bytes = concatenateBuffers({journal, frame.frame});
 
-    auto loaded = createFromBinary<std::map<std::string, Track>>(bytes);
+    auto loaded = createFromBinary<std::map<std::string, Track>>(bytes).value();
     check(loaded.size() == 2);
     check(loaded.at("a") == makeTrack());
     check(loaded.at("b") == changed);
@@ -454,7 +458,7 @@ auto specExampleBytes = test(
     []
 {
     auto rig = Rig {{{1, {0.5f, 1.0f}}, {-2, {2.0f, 0.25f}}}};
-    auto expected = Calder::Buffer {
+    auto expected = Calder::Detail::Buffer {
         0x43, 0x4C, 0x44, 0x31, 0x37, 0x00, 0x00, 0x00, 0x07, 0x2A, 0x00, 0x00, 0x00,
         0x00, 0x12, 0x24, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x01, 0x01,
         0x02, 0x02, 0x02, 0x03, 0x08, 0x02, 0x02, 0x04, 0x08, 0x01, 0x00, 0x00, 0x00,

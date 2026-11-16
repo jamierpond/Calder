@@ -12,6 +12,7 @@
 //   keeps its prior value: no wraparound, no out-of-range casts.
 // - Truncated or corrupted bytes never crash or read out of bounds.
 
+#include "CalderTestHelpers.h"
 #include <Calder/Calder.h>
 #include <Miro/Reflect.h>
 #include <Miro/Xml.h>
@@ -29,6 +30,7 @@
 using namespace nano;
 using namespace Miro;
 using namespace Calder;
+using namespace CalderTestHelpers;
 
 namespace
 {
@@ -36,7 +38,7 @@ namespace
 template <typename To, typename From>
 To convertThroughBinary(const From& value)
 {
-    return createFromBinary<To>(toBinary(value));
+    return createFromBinary<To>(toBinary(value)).value();
 }
 
 template <typename To, typename From>
@@ -311,7 +313,7 @@ void checkFieldTypeChange(From from, To prior, Expect expect)
 
     {
         auto loaded = SingleFieldHolder<To> {prior, 0};
-        fromBinary(loaded, toBinary(written));
+        check(fromBinary(loaded, toBinary(written)).hasLoaded());
         expect(loaded.value);
         check(loaded.after == 77);
     }
@@ -412,7 +414,8 @@ auto nanToInt = test("Evolution: NaN -> int keeps prior (binary)") = []
     auto written =
         SingleFieldHolder<double> {std::numeric_limits<double>::quiet_NaN(), 77};
     auto loaded = SingleFieldHolder<int> {5, 0};
-    fromBinary(loaded, toBinary(written));
+    auto result = fromBinary(loaded, toBinary(written));
+    check(result.fieldProblems.at(0).kind == FieldProblem::Kind::NumberDidNotFit);
     check(loaded.value == 5);
     check(loaded.after == 77);
 };
@@ -478,9 +481,9 @@ auto packedNarrowing = test(
 
 // --- Journal form ---
 
-auto Bytes = [](std::initializer_list<Calder::Buffer> parts)
+auto Bytes = [](std::initializer_list<Calder::Detail::Buffer> parts)
 {
-    auto out = Calder::Buffer {};
+    auto out = Calder::Detail::Buffer {};
 
     for (const auto& part: parts)
         out.insert(out.end(), part.begin(), part.end());
@@ -496,18 +499,16 @@ auto journalEvolved =
         {"b", {.field1 = 2, .field2 = "two"}},
     };
 
-    auto journal = toBinaryJournal(base);
-    auto keyTable = Calder::readJournalKeyTable(journal);
+    auto journal = makeJournalOf(base);
+    auto keyTable = Calder::Detail::readJournalKeyTable(journal);
     auto bytes = Bytes({
         journal,
-        binaryJournalSet("c", ProfileV1 {.field1 = 3, .field2 = "three"}, keyTable)
-            .value(),
-        binaryJournalSet("a", ProfileV1 {.field1 = 10, .field2 = "uno"}, keyTable)
-            .value(),
-        binaryJournalRemove("b"),
+        makeSetFrame("c", ProfileV1 {.field1 = 3, .field2 = "three"}, keyTable),
+        makeSetFrame("a", ProfileV1 {.field1 = 10, .field2 = "uno"}, keyTable),
+        makeRemoveFrame("b"),
     });
 
-    auto loaded = createFromBinary<std::map<std::string, AddedV2>>(bytes);
+    auto loaded = createFromBinary<std::map<std::string, AddedV2>>(bytes).value();
     check(loaded.size() == 2);
     check(loaded.at("a").field1 == 10);
     check(loaded.at("a").field2 == "uno");
@@ -521,25 +522,27 @@ auto journalMixed =
 {
     auto base =
         std::map<std::string, ProfileV1> {{"a", {.field1 = 1, .field2 = "one"}}};
-    auto journal = toBinaryJournal(base);
-    auto keyTable = Calder::readJournalKeyTable(journal);
+    auto journal = makeJournalOf(base);
+    auto keyTable = Calder::Detail::readJournalKeyTable(journal);
     auto valueV2 = AddedV2 {.field1 = 2, .field2 = "two", .added = 7};
 
-    check(!binaryJournalSet("b", valueV2, keyTable).has_value());
+    check(!Calder::Detail::makeJournalSetFrame("b", valueV2, keyTable).hasFrame());
 
-    auto loaded = createFromBinary<std::map<std::string, AddedV2>>(journal);
+    auto loaded = createFromBinary<std::map<std::string, AddedV2>>(journal).value();
     check(loaded.at("a").field2 == "one");
     check(loaded.at("a").added == 42);
     loaded["b"] = valueV2;
 
     // Compaction: re-encode as a fresh V2 journal, whose table has V2's names.
-    auto compacted = toBinaryJournal(loaded);
-    auto compactedKeyTable = Calder::readJournalKeyTable(compacted);
-    auto frame = binaryJournalSet("c", valueV2, compactedKeyTable);
-    check(frame.has_value());
+    auto compacted = makeJournalOf(loaded);
+    auto compactedKeyTable = Calder::Detail::readJournalKeyTable(compacted);
+    auto frame =
+        Calder::Detail::makeJournalSetFrame("c", valueV2, compactedKeyTable);
+    check(frame.hasFrame());
 
     auto replayed = createFromBinary<std::map<std::string, AddedV2>>(
-        Bytes({compacted, frame.value()}));
+                        Bytes({compacted, frame.frame}))
+                        .value();
     check(replayed.size() == 3);
     check(replayed.at("a").added == 42);
     check(replayed.at("b").added == 7);
@@ -556,7 +559,7 @@ auto truncatedBinary =
     for (auto size = std::size_t {0}; size < bytes.size(); ++size)
     {
         auto prefix = std::span<const std::uint8_t> {bytes.data(), size};
-        auto loaded = createFromBinary<AddedOuterV2>(prefix);
+        auto loaded = loadIgnoringProblems<AddedOuterV2>(prefix);
 
         // The key table trails the document, so any truncation loses it
         // and the document is refused whole.
@@ -571,17 +574,16 @@ auto truncatedJournal =
 {
     auto base =
         std::map<std::string, ProfileV1> {{"a", {.field1 = 1, .field2 = "one"}}};
-    auto journal = toBinaryJournal(base);
-    auto keyTable = Calder::readJournalKeyTable(journal);
+    auto journal = makeJournalOf(base);
+    auto keyTable = Calder::Detail::readJournalKeyTable(journal);
     auto bytes = Bytes({
         journal,
-        binaryJournalSet("b", ProfileV1 {.field1 = 2, .field2 = "two"}, keyTable)
-            .value(),
+        makeSetFrame("b", ProfileV1 {.field1 = 2, .field2 = "two"}, keyTable),
     });
 
     for (auto size = std::size_t {0}; size < bytes.size(); ++size)
     {
-        auto loaded = createFromBinary<std::map<std::string, AddedV2>>(
+        auto loaded = loadIgnoringProblems<std::map<std::string, AddedV2>>(
             std::span<const std::uint8_t> {bytes.data(), size});
 
         // Either nothing (base torn), or the base alone (frame torn).
@@ -606,13 +608,14 @@ auto corruptedBinary =
               std::uint8_t {0x7F},
               std::uint8_t {0x80},
               static_cast<std::uint8_t>(bytes[i] ^ 0x01),
-              std::uint8_t {static_cast<std::uint8_t>(Calder::Tag::Array)},
-              std::uint8_t {static_cast<std::uint8_t>(Calder::Tag::PackedDouble)}})
+              std::uint8_t {static_cast<std::uint8_t>(Calder::Detail::Tag::Array)},
+              std::uint8_t {
+                  static_cast<std::uint8_t>(Calder::Detail::Tag::PackedDouble)}})
         {
             auto damaged = bytes;
             damaged[i] = replacement;
 
-            auto loaded = createFromBinary<AddedOuterV2>(damaged);
+            auto loaded = loadIgnoringProblems<AddedOuterV2>(damaged);
             check(loaded.list.size() <= 1000000);
         }
     }
@@ -647,7 +650,7 @@ auto xmlEmptyVector =
     auto value = WithList {};
     value.items.clear();
 
-    check(createFromBinary<WithList>(toBinary(value)).items.empty());
+    check(createFromBinary<WithList>(toBinary(value)).value().items.empty());
     check(createFromJSONString<WithList>(toJSONString(value)).items.empty());
     check(createFromXMLString<WithList>(toXMLString(value)).items.empty());
 };

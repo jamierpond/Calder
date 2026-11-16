@@ -29,7 +29,8 @@ auto binaryEntryHeader =
     auto point = BinaryPoint {};
     point.x = 3;
 
-    auto copy = Calder::createFromBinary<BinaryPoint>(Calder::toBinary(point));
+    auto copy =
+        Calder::createFromBinary<BinaryPoint>(Calder::toBinary(point)).value();
     check(copy.x == 3);
     check(copy.y == 0);
 };

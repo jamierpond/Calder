@@ -17,7 +17,7 @@
 #include <variant>
 #include <vector>
 
-// Miro binary wire format ("CLD1"). Fixed-width fields are little-endian.
+// Calder's wire format ("CLD1"). Fixed-width fields are little-endian.
 //
 //   file      := "CLD1" | u32 keyTableOffset | value | keyTable
 //   keyTable  := varint keyCount | { varint length | bytes }*
@@ -59,13 +59,10 @@
 // skip a corrupt frame whose length still fits, and stop at a torn one
 // that runs past the end of the file.
 
-namespace Calder
+namespace Calder::Detail
 {
 
 using Buffer = std::vector<std::uint8_t>;
-
-namespace Detail
-{
 
 // Sizes and offsets on the wire are 32-bit, so one document holds at most
 // 4 GiB; larger data has to be split into several documents.
@@ -85,8 +82,6 @@ inline std::uint32_t convertToStoredSize(std::size_t sizeInBytes)
 
     return static_cast<std::uint32_t>(sizeInBytes);
 }
-
-} // namespace Detail
 
 enum class Tag : std::uint8_t
 {
@@ -185,6 +180,11 @@ JournalInfo inspectJournal(std::span<const std::uint8_t> data);
 std::vector<JournalFrame> readJournalFrames(std::span<const std::uint8_t> data);
 
 Buffer makeJournal(std::span<const std::uint8_t> baseDoc);
+// `document` with its key table replaced by `keyTable`, which must keep
+// every id the document uses.
+Buffer replaceKeyTable(std::span<const std::uint8_t> document,
+                       const InternedKeyTable& keyTable);
+
 Buffer makeFrame(FrameKind kind,
                  std::string_view key,
                  std::span<const std::uint8_t> frameValue);
@@ -214,8 +214,6 @@ inline constexpr int varintMaxShift = 64;
 // object keys. finishWithKeyTable() appends the key table and spends the
 // writer. Given a journal's key table, it writes a set frame's value
 // instead, and finishJournalFrameValue() spends it.
-namespace Detail
-{
 
 class ByteWriter
 {
@@ -244,29 +242,32 @@ public:
     // costs more than the copy for the few bytes a field writes.
     void writeBytes(const void* data, std::size_t size)
     {
+        if (size == 0)
+            return;
+
         auto offset = buffer.size();
         buffer.resize(offset + size);
         std::memcpy(buffer.data() + offset, data, size);
     }
 
-    template <Detail::FixedWidthNumber T>
+    template <FixedWidthNumber T>
     void writeFixedWidth(T value)
     {
-        auto bytes = Detail::encodeLittleEndian(value);
+        auto bytes = encodeLittleEndian(value);
         writeBytes(bytes.data(), bytes.size());
     }
 
-    template <Detail::FixedWidthNumber T>
+    template <FixedWidthNumber T>
     void writeFixedWidthElements(std::span<const T> values)
     {
-        Detail::appendLittleEndianElements(buffer, values);
+        appendLittleEndianElements(buffer, values);
     }
 
     void writeU32(std::uint32_t value) { writeFixedWidth(value); }
 
     void patchU32(std::size_t fieldOffset, std::uint32_t value)
     {
-        auto bytes = Detail::encodeLittleEndian(value);
+        auto bytes = encodeLittleEndian(value);
         std::ranges::copy(bytes,
                           buffer.begin() + static_cast<std::ptrdiff_t>(fieldOffset));
     }
@@ -310,7 +311,7 @@ public:
 
         // Every size and offset inside the document is at most its length,
         // so checking the whole document covers all of them.
-        Detail::convertToStoredSize(buffer.size());
+        convertToStoredSize(buffer.size());
         patchU32(headerFieldOffset, static_cast<std::uint32_t>(tableOffset));
         return std::move(buffer);
     }
@@ -318,10 +319,15 @@ public:
     // nullopt if the value used a key name the journal's table lacks.
     std::optional<Buffer> finishJournalFrameValue()
     {
-        if (hasMetKeyMissingFromJournal)
+        if (!keysMissingFromJournal.empty())
             return std::nullopt;
 
         return std::move(buffer);
+    }
+
+    const std::vector<std::string>& getKeysMissingFromJournal() const
+    {
+        return keysMissingFromJournal;
     }
 
 private:
@@ -331,25 +337,27 @@ private:
 
         if (!id)
         {
-            hasMetKeyMissingFromJournal = true;
+            recordKeyMissingFromJournal(key);
             return 0;
         }
 
         return *id;
     }
 
+    void recordKeyMissingFromJournal(std::string_view key)
+    {
+        if (std::ranges::find(keysMissingFromJournal, key)
+            == keysMissingFromJournal.end())
+            keysMissingFromJournal.emplace_back(key);
+    }
+
     Buffer buffer;
     InternedKeyTable keyTable;
     std::optional<std::reference_wrapper<InternedKeyTable>> journalKeyTable;
-    bool hasMetKeyMissingFromJournal = false;
+    std::vector<std::string> keysMissingFromJournal;
 };
 
-} // namespace Detail
-
 class Document;
-
-namespace Detail
-{
 
 // An out-of-range read clears `ok` and yields zeros, so callers check
 // once at the end.
@@ -415,7 +423,7 @@ struct ByteReader
         if (!hasReadEverythingInBounds)
             return T {};
 
-        return Detail::decodeLittleEndian<T>(bytes.template first<sizeof(T)>());
+        return decodeLittleEndian<T>(bytes.template first<sizeof(T)>());
     }
 
     std::uint32_t readU32() { return readFixedWidth<std::uint32_t>(); }
@@ -479,6 +487,10 @@ bool skipElements(ByteReader& reader, Encoding encoding, std::size_t count);
 // Advances past one whole value, tag included.
 bool skipValue(ByteReader& reader);
 
+bool doesValueEndAt(std::span<const std::uint8_t> data,
+                    std::size_t valueOffset,
+                    std::size_t expectedEndOffset);
+
 // One value's header. Containers get their payload range and element
 // count, clamped to the buffer; numbers get where their bytes start.
 struct ValueHeader
@@ -528,9 +540,25 @@ bool readStoredPackedLayout(const Document& document,
                             const ValueHeader& header,
                             StoredPackedLayout& layout);
 
+// The field whose path, below the first `depth` segments of field
+// `prefixField`'s path, continues with `key`.
+std::optional<std::size_t> findPackedFieldAtDepth(const StoredPackedLayout& layout,
+                                                  std::size_t prefixField,
+                                                  std::size_t depth,
+                                                  std::string_view key);
+
+// The distinct path segments at `depth` below that prefix, in layout order.
+std::vector<std::string_view> listPackedKeysAtDepth(const StoredPackedLayout& layout,
+                                                    std::size_t prefixField,
+                                                    std::size_t depth);
+
 std::optional<PackedFieldType> findPackedFieldType(std::uint8_t wireByte);
 std::optional<PackedFieldType> findPackedFieldType(Encoding encoding);
 Encoding getEncoding(PackedFieldType type);
+
+// One record of a PackedStructArray, read as an object whose fields come
+// from the stored layout.
+ValueHeader makePackedRecordHeader(std::size_t recordOffset);
 
 // A packed array element has no tag; it reads as a number at `elementOffset`.
 ValueHeader makePackedElementHeader(Encoding encoding, std::size_t elementOffset);
@@ -554,6 +582,10 @@ public:
     std::optional<ObjectEntry> readNextEntry();
     std::optional<ObjectEntry> findEntryWithKey(std::string_view key);
 
+    // True when the walk ended at an entry that runs out of bounds or
+    // names a key id the table lacks, rather than at the container's end.
+    bool hasStoppedAtDamage() const;
+
 private:
     std::string_view readKey();
 
@@ -562,10 +594,6 @@ private:
     std::size_t endOffset;
     bool hasInlineKeys;
 };
-
-} // namespace Detail
-
-class View;
 
 // Non-owning handle on an encoded buffer: validates the header and
 // indexes the key table. The bytes must outlive the Document and its Views.
@@ -584,8 +612,6 @@ public:
     bool isValid() const { return valid; }
     std::span<const std::uint8_t> bytes() const { return data; }
     std::size_t getRootValueOffset() const { return rootValueOffset; }
-
-    View root() const;
 
     std::size_t getKeyCount() const { return getKeyNames().size(); }
 
@@ -615,46 +641,4 @@ private:
     bool valid = false;
 };
 
-// Cursor into an encoded buffer that touches only the bytes on the path
-// to the requested value, skipping siblings by their size prefixes.
-// operator[](i) on a non-packed array costs O(i) skips.
-class View
-{
-public:
-    View() = default;
-
-    View(const Document& documentToUse, std::size_t valueOffsetToUse);
-
-    bool isValid() const { return document != nullptr && header.valid; }
-    bool isObject() const { return isValid() && header.tag == Tag::Object; }
-    bool isMap() const { return isValid() && header.tag == Tag::Map; }
-    bool isArray() const { return hasCategory(Detail::ValueCategory::Array); }
-
-    View operator[](std::string_view key) const;
-    View operator[](std::size_t index) const;
-
-    // Array element count, or object/map entry count (scans entries).
-    std::size_t size() const;
-
-    std::int64_t asInt(std::int64_t fallback = 0) const;
-    double asNumber(double fallback = 0.0) const;
-    std::string_view asString() const;
-
-    // Resume from here later with View {document, offset}.
-    std::size_t getValueOffset() const { return header.valueOffset; }
-
-private:
-    View(const Document& documentToUse, const Detail::ValueHeader& headerToUse);
-
-    bool hasCategory(Detail::ValueCategory category) const
-    {
-        return isValid() && header.category == category;
-    }
-
-    std::optional<Detail::Number> readNumber() const;
-
-    const Document* document = nullptr;
-    Detail::ValueHeader header {};
-};
-
-} // namespace Calder
+} // namespace Calder::Detail

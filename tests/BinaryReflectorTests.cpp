@@ -1,5 +1,6 @@
 #include "TestTypes.h"
 
+#include "CalderTestHelpers.h"
 #include <Calder/Calder.h>
 
 #include <NanoTest/NanoTest.h>
@@ -11,6 +12,7 @@
 using namespace nano;
 using namespace Miro;
 using namespace Calder;
+using namespace CalderTestHelpers;
 
 namespace
 {
@@ -18,7 +20,7 @@ namespace
 template <typename T>
 T roundTripThroughBinary(const T& value)
 {
-    return createFromBinary<T>(toBinary(value));
+    return createFromBinary<T>(toBinary(value)).value();
 }
 
 } // namespace
@@ -262,7 +264,8 @@ auto binaryNarrowingOnLoad =
 
     constexpr auto doesNotFitInInt8 = std::int16_t {300};
     auto loaded =
-        createFromBinary<SignedBytes>(toBinary(Shorts {{1, doesNotFitInInt8, -2}}));
+        createFromBinary<SignedBytes>(toBinary(Shorts {{1, doesNotFitInInt8, -2}}))
+            .value();
 
     check(loaded.values == std::vector<std::int8_t> {1, 0, -2});
 };
@@ -391,7 +394,7 @@ auto binaryMissingKeys = test("Binary: missing keys keep prior values") = []
     val.a = 9;
     val.b = "nine";
 
-    auto copy = createFromBinary<RecordV2>(toBinary(val));
+    auto copy = createFromBinary<RecordV2>(toBinary(val)).value();
     check(copy.a == 9);
     check(copy.b == "nine");
     check(copy.added == 1.5); // untouched default
@@ -404,7 +407,7 @@ auto binaryExtraKeys = test("Binary: extra keys are skipped") = []
     val.b = "four";
     val.added = 2.5;
 
-    auto copy = createFromBinary<RecordV1>(toBinary(val));
+    auto copy = createFromBinary<RecordV1>(toBinary(val)).value();
     check(copy.a == 4);
     check(copy.b == "four");
 };
@@ -415,7 +418,7 @@ auto binaryReordered = test("Binary: fields load in any order") = []
     val.a = 11;
     val.b = "eleven";
 
-    auto copy = createFromBinary<RecordV2Reordered>(toBinary(val));
+    auto copy = createFromBinary<RecordV2Reordered>(toBinary(val)).value();
     check(copy.a == 11);
     check(copy.b == "eleven");
 };
@@ -432,7 +435,7 @@ auto binaryTypeMismatch = test("Binary: mismatched types keep prior values") = [
     auto val = ClassWithInt {};
     val.count = 5;
 
-    auto copy = createFromBinary<Stringy>(toBinary(val));
+    auto copy = createFromBinary<Stringy>(toBinary(val)).value();
     check(copy.count == "keep");
 };
 
@@ -443,9 +446,9 @@ auto binaryCorruptInput = test("Binary: corrupt input yields defaults") = []
     // Truncations at every length must not crash.
     for (std::size_t cut = 0; cut < good.size(); ++cut)
     {
-        auto truncated = Calder::Buffer(
+        auto truncated = Calder::Detail::Buffer(
             good.begin(), good.begin() + static_cast<std::ptrdiff_t>(cut));
-        auto copy = createFromBinary<ClassWithInt>(truncated);
+        auto copy = loadIgnoringProblems<ClassWithInt>(truncated);
         ignoreUnused(copy);
     }
 
@@ -454,11 +457,11 @@ auto binaryCorruptInput = test("Binary: corrupt input yields defaults") = []
     {
         auto mangled = good;
         mangled[i] = static_cast<std::uint8_t>(~mangled[i]);
-        auto copy = createFromBinary<ClassWithInt>(mangled);
+        auto copy = loadIgnoringProblems<ClassWithInt>(mangled);
         ignoreUnused(copy);
     }
 
-    check(createFromBinary<ClassWithInt>(Calder::Buffer {}).count == 42);
+    check(loadIgnoringProblems<ClassWithInt>(Calder::Detail::Buffer {}).count == 42);
 };
 
 auto binaryEmptyStruct = test("Binary: empty struct round trip") = []
@@ -475,26 +478,19 @@ auto binaryView = test("Binary: View jumps to nested values without decoding") =
     auto val = ClassWithVectorOfObjects {};
     val.items = {{100}, {200}, {300}};
 
-    auto buffer = toBinary(val);
-    auto doc = Calder::Document {std::span<const std::uint8_t> {buffer}};
-    check(doc.isValid());
+    auto file = File::fromBytes(toBinary(val));
+    check(file.getStatus() == LoadStatus::Loaded);
 
-    auto root = doc.root();
+    auto root = file.getRoot();
     check(root.isObject());
 
     auto items = root["items"];
     check(items.isArray());
-    check(items.size() == 3);
-    check(items[1]["x"].asInt() == 200);
-    check(items[2]["x"].asInt() == 300);
+    check(items.getSize() == 3);
+    check(items[1]["x"].asInteger() == 200);
+    check(items[2]["x"].asInteger() == 300);
     check(!items[3].isValid());
     check(!root["missing"].isValid());
-
-    // The offset is a stable handle into the buffer — resuming from it
-    // lands on the same value.
-    auto offset = items[1]["x"].getValueOffset();
-    check(offset < buffer.size());
-    check(Calder::View {doc, offset}.asInt() == 200);
 };
 
 auto binaryViewPacked = test("Binary: View indexes packed arrays") = []
@@ -502,12 +498,11 @@ auto binaryViewPacked = test("Binary: View indexes packed arrays") = []
     auto val = ClassWithArrayOfDoubles {};
     val.vals = {0.5, 1.0 / 3.0, -2.25};
 
-    auto buffer = toBinary(val);
-    auto doc = Calder::Document {std::span<const std::uint8_t> {buffer}};
+    auto file = File::fromBytes(toBinary(val));
 
-    auto vals = doc.root()["vals"];
+    auto vals = file.getRoot()["vals"];
     check(vals.isArray());
-    check(vals.size() == 3);
+    check(vals.getSize() == 3);
     check(vals[0].asNumber() == 0.5);
     check(vals[1].asNumber() == 1.0 / 3.0);
     check(vals[2].asNumber() == -2.25);
@@ -518,12 +513,11 @@ auto binaryViewStrings = test("Binary: View reads strings and maps") = []
     auto val = ClassWithStringMap {};
     val.data = {{"greeting", "hello"}, {"farewell", "bye"}};
 
-    auto buffer = toBinary(val);
-    auto doc = Calder::Document {std::span<const std::uint8_t> {buffer}};
+    auto file = File::fromBytes(toBinary(val));
 
-    auto data = doc.root()["data"];
-    check(data.isMap());
-    check(data.size() == 2);
+    auto data = file.getRoot()["data"];
+    check(data.isObject());
+    check(data.getSize() == 2);
     check(data["greeting"].asString() == "hello");
     check(data["farewell"].asString() == "bye");
     check(!data["nope"].isValid());
@@ -536,47 +530,37 @@ namespace
 
 using ProfileMap = std::map<std::string, Inner>;
 
-Calder::Buffer concatenateBuffers(std::initializer_list<Calder::Buffer> parts)
-{
-    auto out = Calder::Buffer {};
-
-    for (const auto& part: parts)
-        out.insert(out.end(), part.begin(), part.end());
-
-    return out;
-}
-
 } // namespace
 
 auto journalRoundTrip = test("Journal: base plus frames replay in order") = []
 {
-    auto base = toBinaryJournal(ProfileMap {{"a", {1}}, {"b", {2}}});
-    auto keyTable = Calder::readJournalKeyTable(base);
+    auto base = makeJournalOf(ProfileMap {{"a", {1}}, {"b", {2}}});
+    auto keyTable = Calder::Detail::readJournalKeyTable(base);
 
     auto bytes = concatenateBuffers({
         base,
-        binaryJournalSet("c", Inner {3}, keyTable).value(), // insert
-        binaryJournalSet("a", Inner {9}, keyTable).value(), // overwrite
-        binaryJournalRemove("b"), // remove
-        binaryJournalSet("b", Inner {5}, keyTable).value(), // re-add after remove
+        makeSetFrame("c", Inner {3}, keyTable), // insert
+        makeSetFrame("a", Inner {9}, keyTable), // overwrite
+        makeRemoveFrame("b"), // remove
+        makeSetFrame("b", Inner {5}, keyTable), // re-add after remove
     });
 
-    auto loaded = createFromBinary<ProfileMap>(bytes);
+    auto loaded = createFromBinary<ProfileMap>(bytes).value();
     check(loaded.size() == 3);
     check(loaded["a"].x == 9);
     check(loaded["b"].x == 5);
     check(loaded["c"].x == 3);
 
-    auto info = Calder::inspectJournal(bytes);
+    auto info = Calder::Detail::inspectJournal(bytes);
     check(info.valid);
     check(!info.truncated);
-    check(Calder::readJournalFrames(bytes).size() == 4);
+    check(Calder::Detail::readJournalFrames(bytes).size() == 4);
 };
 
 auto journalBaseOnly = test("Journal: frameless journal equals its base") = []
 {
     auto base = ProfileMap {{"only", {7}}};
-    auto loaded = createFromBinary<ProfileMap>(toBinaryJournal(base));
+    auto loaded = createFromBinary<ProfileMap>(makeJournalOf(base)).value();
 
     check(loaded.size() == 1);
     check(loaded["only"].x == 7);
@@ -584,39 +568,38 @@ auto journalBaseOnly = test("Journal: frameless journal equals its base") = []
 
 auto journalNonMap = test("Journal: non-map target reads the base alone") = []
 {
-    auto base = toBinaryJournal(Inner {42});
-    auto keyTable = Calder::readJournalKeyTable(base);
-    auto bytes = concatenateBuffers(
-        {base, binaryJournalSet("x", Inner {1}, keyTable).value()});
+    auto base = makeJournalOf(Inner {42});
+    auto keyTable = Calder::Detail::readJournalKeyTable(base);
+    auto bytes = concatenateBuffers({base, makeSetFrame("x", Inner {1}, keyTable)});
 
-    check(createFromBinary<Inner>(bytes).x == 42);
+    check(createFromBinary<Inner>(bytes).value().x == 42);
 };
 
 auto journalTornTail = test("Journal: torn tail drops only incomplete frames") = []
 {
-    auto base = toBinaryJournal(ProfileMap {{"a", {1}}});
-    auto keyTable = Calder::readJournalKeyTable(base);
+    auto base = makeJournalOf(ProfileMap {{"a", {1}}});
+    auto keyTable = Calder::Detail::readJournalKeyTable(base);
     auto intact = concatenateBuffers({
         base,
-        binaryJournalSet("b", Inner {2}, keyTable).value(),
+        makeSetFrame("b", Inner {2}, keyTable),
     });
 
-    auto lastFrame = binaryJournalSet("c", Inner {3}, keyTable).value();
+    auto lastFrame = makeSetFrame("c", Inner {3}, keyTable);
     auto full = concatenateBuffers({intact, lastFrame});
 
     // Cut the last frame at every possible length: the first two
     // entries must survive, "c" must only appear when fully written.
     for (auto cut = intact.size(); cut <= full.size(); ++cut)
     {
-        auto torn = Calder::Buffer(full.begin(),
-                                   full.begin() + static_cast<std::ptrdiff_t>(cut));
-        auto loaded = createFromBinary<ProfileMap>(torn);
+        auto torn = Calder::Detail::Buffer(
+            full.begin(), full.begin() + static_cast<std::ptrdiff_t>(cut));
+        auto loaded = createFromBinary<ProfileMap>(torn).value();
 
         check(loaded["a"].x == 1);
         check(loaded["b"].x == 2);
         check(loaded.count("c") == (cut == full.size() ? 1U : 0U));
 
-        auto info = Calder::inspectJournal(torn);
+        auto info = Calder::Detail::inspectJournal(torn);
         check(info.valid);
         check(info.truncated == (cut != intact.size() && cut != full.size()));
     }
@@ -625,10 +608,10 @@ auto journalTornTail = test("Journal: torn tail drops only incomplete frames") =
 auto journalCorruptFrame =
     test("Journal: a corrupt frame is skipped and counted") = []
 {
-    auto base = toBinaryJournal(ProfileMap {{"a", {1}}});
-    auto keyTable = Calder::readJournalKeyTable(base);
-    auto setB = binaryJournalSet("b", Inner {2}, keyTable).value();
-    auto setC = binaryJournalSet("c", Inner {3}, keyTable).value();
+    auto base = makeJournalOf(ProfileMap {{"a", {1}}});
+    auto keyTable = Calder::Detail::readJournalKeyTable(base);
+    auto setB = makeSetFrame("b", Inner {2}, keyTable);
+    auto setC = makeSetFrame("c", Inner {3}, keyTable);
     auto bytes = concatenateBuffers({base, setB, setC});
 
     constexpr auto checksumByteCount = std::size_t {4};
@@ -640,10 +623,9 @@ auto journalCorruptFrame =
     check(loaded.size() == 2);
     check(loaded["a"].x == 1);
     check(loaded["c"].x == 3);
-    check(report.skippedJournalFrameCount == 1);
-    check(!report.isJournalTruncated);
+    check(report.lostJournalFrameCount == 1);
 
-    auto info = Calder::inspectJournal(bytes);
+    auto info = Calder::Detail::inspectJournal(bytes);
     check(info.skippedFrameCount == 1);
     check(!info.truncated);
     check(info.frameBytes == setB.size() + setC.size());
@@ -652,24 +634,24 @@ auto journalCorruptFrame =
 auto journalWholeDocumentFrame =
     test("Journal: a set frame holding a whole document is skipped") = []
 {
-    auto base = toBinaryJournal(ProfileMap {{"a", {1}}});
-    auto frameWithDocument =
-        Calder::makeFrame(Calder::FrameKind::Set, "b", toBinary(Inner {2}));
+    auto base = makeJournalOf(ProfileMap {{"a", {1}}});
+    auto frameWithDocument = Calder::Detail::makeFrame(
+        Calder::Detail::FrameKind::Set, "b", toBinary(Inner {2}));
 
     auto loaded = ProfileMap {};
     auto report = fromBinary(loaded, concatenateBuffers({base, frameWithDocument}));
     check(loaded.size() == 1);
-    check(report.skippedJournalFrameCount == 1);
+    check(report.lostJournalFrameCount == 1);
 };
 
 auto journalTornTailReport =
-    test("Journal: a torn tail is reported, not counted as skipped") = []
+    test("Journal: a torn tail is reported as one lost frame") = []
 {
-    auto base = toBinaryJournal(ProfileMap {{"a", {1}}});
-    auto keyTable = Calder::readJournalKeyTable(base);
+    auto base = makeJournalOf(ProfileMap {{"a", {1}}});
+    auto keyTable = Calder::Detail::readJournalKeyTable(base);
     auto bytes = concatenateBuffers({
         base,
-        binaryJournalSet("b", Inner {2}, keyTable).value(),
+        makeSetFrame("b", Inner {2}, keyTable),
     });
 
     bytes.pop_back();
@@ -677,17 +659,17 @@ auto journalTornTailReport =
     auto loaded = ProfileMap {};
     auto report = fromBinary(loaded, bytes);
     check(loaded.size() == 1);
-    check(report.isJournalTruncated);
-    check(report.skippedJournalFrameCount == 0);
+    check(report.hasLoaded());
+    check(report.lostJournalFrameCount == 1);
 };
 
 auto journalGarbage = test("Journal: garbage input is rejected calmly") = []
 {
-    check(!Calder::inspectJournal({}).valid);
+    check(!Calder::Detail::inspectJournal({}).valid);
 
-    auto junk = Calder::Buffer {'C', 'L', 'D', 'J', 0xFF, 0xFF, 0xFF, 0xFF};
-    check(!Calder::inspectJournal(junk).valid);
-    check(createFromBinary<ProfileMap>(junk).empty());
+    auto junk = Calder::Detail::Buffer {'C', 'L', 'D', 'J', 0xFF, 0xFF, 0xFF, 0xFF};
+    check(!Calder::Detail::inspectJournal(junk).valid);
+    check(loadIgnoringProblems<ProfileMap>(junk).empty());
 };
 
 // --- Wire size sanity ---
@@ -746,15 +728,16 @@ auto binaryOmittableAbsent = test("Binary: disengaged Omittable leaves no key") 
     patch.after = 9;
 
     auto bytes = toBinary(patch);
-    auto doc = Calder::Document {bytes};
-    check(doc.isValid());
-    check(!doc.root()["name"].isValid());
-    check(!doc.root()["inner"].isValid());
-    check(!doc.root()["cleared"].isValid());
-    check(doc.root()["count"].asInt() == 3);
-    check(doc.root()["after"].asInt() == 9);
+    auto file = File::fromBytes(bytes);
+    auto root = file.getRoot();
+    check(root.isValid());
+    check(!root["name"].isValid());
+    check(!root["inner"].isValid());
+    check(!root["cleared"].isValid());
+    check(root["count"].asInteger() == 3);
+    check(root["after"].asInteger() == 9);
 
-    auto loaded = createFromBinary<BinaryPatch>(bytes);
+    auto loaded = createFromBinary<BinaryPatch>(bytes).value();
     check(!loaded.name.has_value());
     check(!loaded.inner.has_value());
     check(!loaded.cleared.has_value());

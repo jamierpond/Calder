@@ -8,7 +8,8 @@ endif ()
 add_executable(CalderTests
         BinaryReflectorTests.cpp BinaryFormatTests.cpp
         BinaryBenchmarkTests.cpp SchemaEvolutionTests.cpp
-        BinaryHeaderTests.cpp PackedStructArrayTests.cpp)
+        BinaryHeaderTests.cpp PackedStructArrayTests.cpp
+        PublicApiTests.cpp)
 target_link_libraries(CalderTests PRIVATE
         NanoTest NanoTestMain calder)
 target_compile_options(CalderTests PRIVATE ${CALDER_WARNINGS})

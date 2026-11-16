@@ -10,19 +10,22 @@ endif ()
 
 include(cmake/CPM.cmake)
 
-# jamierpond/Miro jp/packed-structs-on-hooks: visitPacked, NumericConvert.h,
-# missing containers keep their defaults on load, and packed struct arrays
-# (including MIRO_REFLECT_EXTERNAL structs).
+# jamierpond/Miro jp/calder-emberstore: Miro's develop plus the open pull
+# requests Calder needs (visitPacked, missing containers keep their defaults,
+# range-checked numbers, compile-time type names, packed struct arrays).
 if (NOT TARGET Miro)
     CPMAddPackage(
             NAME Miro
             GITHUB_REPOSITORY jamierpond/Miro
-            GIT_TAG 8180bbc75a0f7acc04b19298c1420920f4bbc605)
+            GIT_TAG 65d6c7b02aa16d0191dea8046fa406e6bf2ee2be)
 endif ()
 
 add_library(calder STATIC
-        Calder/Binary.cpp
-        Calder/BinaryReflector.cpp)
+        Calder/Detail/Wire.cpp
+        Calder/Detail/Reflectors.cpp
+        Calder/Detail/View.cpp
+        Calder/Detail/File.cpp
+        Calder/Detail/JournalWriter.cpp)
 
 target_include_directories(calder PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(calder PUBLIC cxx_std_20)

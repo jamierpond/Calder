@@ -1,5 +1,6 @@
 #include "TestTypes.h"
 
+#include "CalderTestHelpers.h"
 #include <Calder/Calder.h>
 
 #include <NanoTest/NanoTest.h>
@@ -12,6 +13,7 @@
 using namespace nano;
 using namespace Miro;
 using namespace Calder;
+using namespace CalderTestHelpers;
 
 namespace
 {
@@ -166,8 +168,8 @@ auto littleEndianDocuments =
           == Bytes {0x43, 0x4C, 0x44, 0x31, 0x14, 0x00, 0x00, 0x00, 0x0C, 0x07, 0x00,
                     0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x02, 0x04, 0x06, 0x00});
 
-    auto emptyKeyTable = Calder::InternedKeyTable {};
-    check(binaryJournalSet("b", 2, emptyKeyTable)
+    auto emptyKeyTable = Calder::Detail::InternedKeyTable {};
+    check(makeSetFrame("b", 2, emptyKeyTable)
           == Bytes {0x01,
                     0x04,
                     0x00,
@@ -186,11 +188,11 @@ auto littleEndianDocuments =
 auto journalFrameUsesBaseKeyIds =
     test("Binary: a journal set frame's value is bare, its key ids the base's") = []
 {
-    auto journal = toBinaryJournal(std::map<std::string, Inner> {{"a", {1}}});
-    auto keyTable = Calder::readJournalKeyTable(journal);
+    auto journal = makeJournalOf(std::map<std::string, Inner> {{"a", {1}}});
+    auto keyTable = Calder::Detail::readJournalKeyTable(journal);
 
     check(keyTable.getKeyCount() == 1);
-    check(binaryJournalSet("b", Inner {2}, keyTable)
+    check(makeSetFrame("b", Inner {2}, keyTable)
           == Bytes {0x01,
                     0x0A,
                     0x00,
@@ -240,10 +242,9 @@ auto mismatchPrimitive =
     auto report = fromBinary(loaded, toBinary(ClassWithInt {}));
 
     check(loaded.count == "unchanged");
-    check(report.typeMismatches.size() == 1);
-    check(report.typeMismatches[0].fieldPath == "count");
-    check(report.typeMismatches[0].storedKind == ValueKind::Number);
-    check(report.typeMismatches[0].expectedKind == ValueKind::String);
+    check(report.fieldProblems.size() == 1);
+    check(report.fieldProblems[0].fieldPath == "count");
+    check(report.fieldProblems[0].kind == FieldProblem::Kind::WrongType);
 };
 
 auto mismatchNested = test("Binary: a nested mismatch reports its full path") = []
@@ -251,8 +252,8 @@ auto mismatchNested = test("Binary: a nested mismatch reports its full path") = 
     auto loaded = ItemsWithText {};
     auto report = fromBinary(loaded, toBinary(ClassWithVectorOfObjects {}));
 
-    check(report.typeMismatches.size() == 3);
-    check(report.typeMismatches[1].fieldPath == "items[1].x");
+    check(report.fieldProblems.size() == 3);
+    check(report.fieldProblems[1].fieldPath == "items[1].x");
 };
 
 auto mismatchContainer =
@@ -261,8 +262,8 @@ auto mismatchContainer =
     auto loaded = CountAsList {};
     auto report = fromBinary(loaded, toBinary(ClassWithInt {}));
 
-    check(report.typeMismatches.size() == 1);
-    check(report.typeMismatches[0].expectedKind == ValueKind::Array);
+    check(report.fieldProblems.size() == 1);
+    check(report.fieldProblems[0].fieldPath == "count");
 };
 
 auto cleanLoadHasNoReport =

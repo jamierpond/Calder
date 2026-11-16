@@ -114,7 +114,8 @@ auto binaryBenchmark = test("Benchmark: binary vs JSON on a track library") = []
 
     // --- Decode ---
     auto binaryDecodeMs = measureBestMilliseconds(
-        iterations, [&] { auto lib = createFromBinary<BenchLibrary>(binary); });
+        iterations,
+        [&] { auto lib = createFromBinary<BenchLibrary>(binary).value(); });
     auto jsonDecodeMs = measureBestMilliseconds(
         iterations, [&] { auto lib = createFromJSONString<BenchLibrary>(json); });
 
@@ -137,7 +138,7 @@ auto binaryBenchmark = test("Benchmark: binary vs JSON on a track library") = []
 
     // Binary round trip is bit-exact — JSON can't promise this for the
     // float embeddings without printing exact decimals.
-    auto decoded = createFromBinary<BenchLibrary>(binary);
+    auto decoded = createFromBinary<BenchLibrary>(binary).value();
     check(decoded.tracks.size() == library.tracks.size());
 
     for (std::size_t i = 0; i < decoded.tracks.size(); ++i)
@@ -153,14 +154,14 @@ auto binaryRandomAccess = test("Benchmark: View random access vs full decode") =
     auto json = toJSONString(library);
 
     // Point lookup via View: touch only the bytes on the path.
-    auto doc = Calder::Document {std::span<const std::uint8_t> {binary}};
-    check(doc.isValid());
+    auto file = File::fromBytes(binary);
+    check(file.getStatus() == LoadStatus::Loaded);
 
     auto viewMs = measureBestMilliseconds(
         5,
         [&]
         {
-            auto title = doc.root()["tracks"][742]["title"].asString();
+            auto title = file.getRoot()["tracks"][742]["title"].asString();
             check(title == "Track number 742");
         });
 

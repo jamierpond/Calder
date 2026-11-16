@@ -5,7 +5,7 @@
 #include <string_view>
 #include <unordered_map>
 
-namespace Calder
+namespace Calder::Detail
 {
 
 // A std::unordered_map<std::string, T> turns the key passed to find() into a
@@ -25,4 +25,4 @@ template <typename T>
 using StringKeyedMap =
     std::unordered_map<std::string, T, StringLookupHash, std::equal_to<>>;
 
-} // namespace Calder
+} // namespace Calder::Detail
