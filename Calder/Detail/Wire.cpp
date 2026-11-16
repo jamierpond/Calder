@@ -237,6 +237,14 @@ JournalInfo walkJournal(std::span<const std::uint8_t> data,
     return journalInfo;
 }
 
+bool doesValueEndAt(std::span<const std::uint8_t> data,
+                    std::size_t valueOffset,
+                    std::size_t expectedEndOffset)
+{
+    auto reader = ByteReader {data, valueOffset};
+    return skipValue(reader) && reader.readOffsetInBytes == expectedEndOffset;
+}
+
 // A count or size that runs past the end of the bytes marks the header
 // invalid, rather than shrinking the container to what is there.
 void markInvalidIfPastEnd(ByteReader& reader, std::size_t endOffset)
@@ -309,8 +317,8 @@ InternedKeyTable readJournalKeyTable(std::span<const std::uint8_t> journal)
     auto base = Document {journal.subspan(headerSize, *baseSize)};
     auto keyTable = InternedKeyTable {};
 
-    for (auto id = std::size_t {0}; id < base.getKeyCount(); ++id)
-        keyTable.getInternedKeyId(base.getKeyName(id));
+    for (auto name: base.getKeyNames())
+        keyTable.getInternedKeyId(name);
 
     // A base naming one key twice would shift every later id. With an empty
     // table every write that names a field compacts instead.
@@ -361,35 +369,11 @@ Buffer makeFrame(FrameKind kind,
 
 std::size_t getFixedByteWidth(Encoding encoding)
 {
-    switch (encoding)
-    {
-        case Encoding::Float32:
-            return sizeof(float);
-        case Encoding::Float64:
-            return sizeof(double);
-        case Encoding::Int8:
-            return sizeof(std::int8_t);
-        case Encoding::UInt8:
-            return sizeof(std::uint8_t);
-        case Encoding::Int16:
-            return sizeof(std::int16_t);
-        case Encoding::UInt16:
-            return sizeof(std::uint16_t);
-        case Encoding::Int32:
-            return sizeof(std::int32_t);
-        case Encoding::UInt32:
-            return sizeof(std::uint32_t);
-        case Encoding::Int64:
-            return sizeof(std::int64_t);
-        case Encoding::UInt64:
-            return sizeof(std::uint64_t);
-        case Encoding::Tagged:
-        case Encoding::Zigzag:
-        case Encoding::PackedStruct:
-            return 0;
-    }
-
-    return 0;
+    auto width = std::size_t {0};
+    visitFixedWidthEncoding(encoding,
+                            [&width](auto row)
+                            { width = sizeof(typename decltype(row)::Number); });
+    return width;
 }
 
 bool isIntegerEncoding(Encoding encoding)
@@ -398,40 +382,39 @@ bool isIntegerEncoding(Encoding encoding)
            && encoding != Encoding::Float64 && encoding != Encoding::PackedStruct;
 }
 
+namespace
+{
+
+// A uint64 travels as its int64 bit pattern, the way Miro passes it on.
+template <FixedWidthNumber T>
+Number widenToNumber(T value)
+{
+    if constexpr (std::floating_point<T>)
+        return static_cast<double>(value);
+    else if constexpr (std::same_as<T, std::uint64_t>)
+        return std::bit_cast<std::int64_t>(value);
+    else
+        return static_cast<std::int64_t>(value);
+}
+
+} // namespace
+
 Number readNumber(ByteReader& reader, Encoding encoding)
 {
-    switch (encoding)
-    {
-        case Encoding::Zigzag:
-            return reader.readZigzag();
-        case Encoding::Float32:
-            return static_cast<double>(reader.readFixedWidth<float>());
-        case Encoding::Float64:
-            return reader.readFixedWidth<double>();
-        case Encoding::Int8:
-            return std::int64_t {reader.readFixedWidth<std::int8_t>()};
-        case Encoding::UInt8:
-            return std::int64_t {reader.readFixedWidth<std::uint8_t>()};
-        case Encoding::Int16:
-            return std::int64_t {reader.readFixedWidth<std::int16_t>()};
-        case Encoding::UInt16:
-            return std::int64_t {reader.readFixedWidth<std::uint16_t>()};
-        case Encoding::Int32:
-            return std::int64_t {reader.readFixedWidth<std::int32_t>()};
-        case Encoding::UInt32:
-            return std::int64_t {reader.readFixedWidth<std::uint32_t>()};
-        case Encoding::Int64:
-            return reader.readFixedWidth<std::int64_t>();
-        case Encoding::UInt64:
-            return std::bit_cast<std::int64_t>(
-                reader.readFixedWidth<std::uint64_t>());
-        case Encoding::Tagged:
-        case Encoding::PackedStruct:
-            break;
-    }
+    if (encoding == Encoding::Zigzag)
+        return reader.readZigzag();
 
-    reader.hasReadEverythingInBounds = false;
-    return std::int64_t {0};
+    auto number = Number {std::int64_t {0}};
+    auto readFixedWidthNumber = [&reader, &number](auto row)
+    {
+        number =
+            widenToNumber(reader.readFixedWidth<typename decltype(row)::Number>());
+    };
+
+    if (!visitFixedWidthEncoding(encoding, readFixedWidthNumber))
+        reader.hasReadEverythingInBounds = false;
+
+    return number;
 }
 
 bool skipElements(ByteReader& reader, Encoding encoding, std::size_t count)
@@ -627,12 +610,12 @@ bool readStoredPackedField(const Document& document,
 
     for (auto i = std::uint64_t {0}; i < pathLength; ++i)
     {
-        auto keyId = reader.readVarint();
+        auto name = document.findKeyName(reader.readVarint());
 
-        if (!document.hasKeyId(keyId))
+        if (!name)
             return false;
 
-        layout.pathSegments.push_back(document.getKeyName(keyId));
+        layout.pathSegments.push_back(*name);
     }
 
     auto type = findPackedFieldType(reader.readByte());
@@ -691,23 +674,22 @@ bool startsWithPrefix(std::span<const std::string_view> path,
 }
 
 std::span<const std::string_view> getPathPrefix(const StoredPackedLayout& layout,
-                                                std::size_t prefixField,
-                                                std::size_t depth)
+                                                const PackedPathPrefix& prefix)
 {
-    if (depth == 0)
+    if (prefix.depth == 0)
         return {};
 
-    return layout.getPath(layout.fields[prefixField]);
+    return layout.getPath(layout.fields[prefix.fieldIndex]);
 }
 
 } // namespace
 
 std::optional<std::size_t> findPackedFieldAtDepth(const StoredPackedLayout& layout,
-                                                  std::size_t prefixField,
-                                                  std::size_t depth,
+                                                  const PackedPathPrefix& place,
                                                   std::string_view key)
 {
-    auto prefix = getPathPrefix(layout, prefixField, depth);
+    auto prefix = getPathPrefix(layout, place);
+    auto depth = place.depth;
 
     for (auto i = std::size_t {0}; i < layout.fields.size(); ++i)
     {
@@ -721,10 +703,10 @@ std::optional<std::size_t> findPackedFieldAtDepth(const StoredPackedLayout& layo
 }
 
 std::vector<std::string_view> listPackedKeysAtDepth(const StoredPackedLayout& layout,
-                                                    std::size_t prefixField,
-                                                    std::size_t depth)
+                                                    const PackedPathPrefix& place)
 {
-    auto prefix = getPathPrefix(layout, prefixField, depth);
+    auto prefix = getPathPrefix(layout, place);
+    auto depth = place.depth;
     auto keys = std::vector<std::string_view> {};
 
     for (const auto& field: layout.fields)
@@ -755,12 +737,12 @@ std::string_view ObjectEntryCursor::readKey()
     if (hasInlineKeys)
         return reader.readString(reader.readVarint());
 
-    auto keyId = reader.readVarint();
+    auto name = document.findKeyName(reader.readVarint());
 
-    if (!document.hasKeyId(keyId))
+    if (!name)
         reader.hasReadEverythingInBounds = false;
 
-    return document.getKeyName(keyId);
+    return name.value_or(std::string_view {});
 }
 
 bool ObjectEntryCursor::hasStoppedAtDamage() const
@@ -791,14 +773,6 @@ std::optional<ObjectEntry> ObjectEntryCursor::findEntryWithKey(std::string_view 
     }
 
     return std::nullopt;
-}
-
-bool doesValueEndAt(std::span<const std::uint8_t> data,
-                    std::size_t valueOffset,
-                    std::size_t expectedEndOffset)
-{
-    auto reader = ByteReader {data, valueOffset};
-    return skipValue(reader) && reader.readOffsetInBytes == expectedEndOffset;
 }
 
 Document::Document(std::span<const std::uint8_t> dataToUse)

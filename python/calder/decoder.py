@@ -137,31 +137,30 @@ def read_key_table(data, table_offset):
     return names
 
 
+SCALAR_DECODERS = {
+    TAG_NULL: lambda reader: None,
+    TAG_FALSE: lambda reader: False,
+    TAG_TRUE: lambda reader: True,
+    TAG_INT: lambda reader: reader.read_zigzag("Int"),
+    TAG_DOUBLE: lambda reader: struct.unpack("<d", reader.read_bytes(8, "Double"))[0],
+    TAG_FLOAT32: lambda reader: struct.unpack("<f", reader.read_bytes(4, "Float32"))[0],
+    TAG_STRING: lambda reader: reader.read_text("String"),
+    TAG_PACKED_INT32: lambda reader: decode_packed_varints(reader),
+    TAG_PACKED_INT64: lambda reader: decode_packed_varints(reader),
+}
+
+
 def decode_value(reader, names, depth):
     if depth > MAX_DEPTH:
         raise CalderError(reader.offset, f"nesting deeper than {MAX_DEPTH}")
     tag_offset = reader.offset
     tag = reader.read_u8("tag")
-    if tag == TAG_NULL:
-        return None
-    if tag == TAG_FALSE:
-        return False
-    if tag == TAG_TRUE:
-        return True
-    if tag == TAG_INT:
-        return reader.read_zigzag("Int")
-    if tag == TAG_DOUBLE:
-        return struct.unpack("<d", reader.read_bytes(8, "Double"))[0]
-    if tag == TAG_FLOAT32:
-        return struct.unpack("<f", reader.read_bytes(4, "Float32"))[0]
-    if tag == TAG_STRING:
-        return reader.read_text("String")
+    if tag in SCALAR_DECODERS:
+        return SCALAR_DECODERS[tag](reader)
     if tag in (TAG_OBJECT, TAG_MAP):
         return decode_object(reader, names, depth, tag)
     if tag == TAG_ARRAY:
         return decode_array(reader, names, depth)
-    if tag in (TAG_PACKED_INT32, TAG_PACKED_INT64):
-        return decode_packed_varints(reader)
     if tag in FIXED_WIDTH_PACKED_FORMATS:
         return decode_fixed_width_packed(reader, tag)
     if tag == TAG_PACKED_STRUCT_ARRAY:
@@ -194,11 +193,7 @@ def decode_object(reader, names, depth, tag):
     result = {}
     while payload.offset < payload.limit:
         if tag == TAG_OBJECT:
-            id_offset = payload.offset
-            key_id = payload.read_varint("key id")
-            if key_id >= len(names):
-                raise CalderError(id_offset, f"key id {key_id} not in key table of {len(names)}")
-            key = names[key_id]
+            key = read_key_name(payload, names, "key id")
         else:
             key = payload.read_text("map key")
         result[key] = decode_value(payload, names, depth + 1)
@@ -229,23 +224,29 @@ def decode_fixed_width_packed(reader, tag):
     return list(struct.unpack(f"<{count}{element_format}", raw))
 
 
-def read_packed_struct_field(payload, names):
+def read_key_name(reader, names, what):
+    id_offset = reader.offset
+    key_id = reader.read_varint(what)
+    if key_id >= len(names):
+        raise CalderError(id_offset, f"key id {key_id} not in key table of {len(names)}")
+    return names[key_id]
+
+
+def read_packed_struct_path(payload, names):
     path_offset = payload.offset
     path_length = payload.read_varint("packed struct field path length")
     if path_length == 0 or path_length > payload.limit - payload.offset:
         raise CalderError(path_offset, f"packed struct field path length {path_length} is invalid")
-    path = []
-    for _ in range(path_length):
-        id_offset = payload.offset
-        key_id = payload.read_varint("packed struct field key id")
-        if key_id >= len(names):
-            raise CalderError(id_offset, f"key id {key_id} not in key table of {len(names)}")
-        path.append(names[key_id])
+    return tuple(read_key_name(payload, names, "packed struct field key id") for _ in range(path_length))
+
+
+def read_packed_struct_field(payload, names):
+    path = read_packed_struct_path(payload, names)
     type_offset = payload.offset
     field_type = payload.read_u8("packed struct field type")
     if field_type not in PACKED_FIELD_FORMATS:
         raise CalderError(type_offset, f"unknown packed struct field type {field_type}")
-    return tuple(path), PACKED_FIELD_FORMATS[field_type]
+    return path, PACKED_FIELD_FORMATS[field_type]
 
 
 def check_packed_struct_paths(paths, offset):
@@ -264,15 +265,17 @@ def store_at_path(record, path, value):
     record[path[-1]] = value
 
 
-def decode_packed_struct_array(reader, names):
-    payload = open_sized_container(reader, "PackedStructArray")
-    count = read_counted_elements(payload, "PackedStructArray")
+def read_packed_struct_layout(payload, names):
     layout_offset = payload.offset
     field_count = payload.read_varint("packed struct field count")
     if field_count == 0 or field_count > payload.limit - payload.offset:
         raise CalderError(layout_offset, f"packed struct field count {field_count} is invalid")
     fields = [read_packed_struct_field(payload, names) for _ in range(field_count)]
     check_packed_struct_paths([path for path, _ in fields], layout_offset)
+    return fields
+
+
+def unpack_packed_records(payload, fields, count):
     record_format = "<" + "".join(element_format for _, (element_format, _) in fields)
     record_size = sum(width for _, (_, width) in fields)
     if count * record_size != payload.limit - payload.offset:
@@ -283,6 +286,14 @@ def decode_packed_struct_array(reader, names):
         for (path, _), value in zip(fields, values):
             store_at_path(record, path, value)
         records.append(record)
+    return records
+
+
+def decode_packed_struct_array(reader, names):
+    payload = open_sized_container(reader, "PackedStructArray")
+    count = read_counted_elements(payload, "PackedStructArray")
+    fields = read_packed_struct_layout(payload, names)
+    records = unpack_packed_records(payload, fields, count)
     finish_container(reader, payload, "PackedStructArray")
     return records
 

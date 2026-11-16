@@ -104,14 +104,21 @@ enum class ReadOutcome
 using RefusedElementReporter = std::function<void(std::size_t elementIndex)>;
 
 // A slot inside one record of a PackedStructArray, read as an object
-// when the C++ element type is not packable. `pathDepth` segments of
-// `prefixField`'s path lead here.
+// when the C++ element type is not packable.
 struct PackedRecordSlot
 {
     std::reference_wrapper<const StoredPackedLayout> layout;
     std::size_t recordOffset = 0;
-    std::size_t pathDepth = 0;
-    std::size_t prefixField = 0;
+    PackedPathPrefix path;
+};
+
+// Where a load starts: one value's header, and the packed record it sits
+// in when it is a field of one.
+struct ReadStart
+{
+    std::reference_wrapper<const Document> document;
+    ValueHeader header;
+    std::optional<PackedRecordSlot> packedRecord;
 };
 
 // Loads straight from the encoded bytes. Objects and arrays keep a
@@ -122,11 +129,7 @@ struct PackedRecordSlot
 class Reader final : public Reflector
 {
 public:
-    Reader(const Document& documentToUse,
-           const ValueHeader& headerToUse,
-           Options optsToUse,
-           LoadResult& resultToUse,
-           std::optional<PackedRecordSlot> packedRecordToUse = {});
+    Reader(const ReadStart& start, Options optsToUse, LoadResult& resultToUse);
 
     ~Reader() override;
 

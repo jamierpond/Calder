@@ -61,17 +61,9 @@ LoadResult runGuardedLoad(Load&& load)
 }
 
 template <typename T>
-void reflectFromHeader(T& value,
-                       const Document& document,
-                       const ValueHeader& header,
-                       LoadResult& result,
-                       std::optional<PackedRecordSlot> packedRecord = {})
+void reflectFrom(T& value, const ReadStart& start, LoadResult& result)
 {
-    auto ref = Reader {document,
-                       header,
-                       Miro::Detail::topLevelOptions<T>(Mode::Load),
-                       result,
-                       packedRecord};
+    auto ref = Reader {start, Miro::Detail::topLevelOptions<T>(Mode::Load), result};
     Miro::Detail::reflectValue(ref, value);
 }
 
@@ -84,11 +76,9 @@ void loadDocument(T& value, const Document& document, LoadResult& result)
         return;
     }
 
-    reflectFromHeader(
-        value,
-        document,
-        parseValueHeader(document.bytes(), document.getRootValueOffset()),
-        result);
+    auto rootHeader =
+        parseValueHeader(document.bytes(), document.getRootValueOffset());
+    reflectFrom(value, {.document = document, .header = rootHeader}, result);
 }
 
 template <typename Map>
@@ -183,12 +173,13 @@ void loadPackedRecordView(T& value,
 
     auto recordOffset =
         layout.recordsOffset + position.packedRecordIndex * layout.recordSize;
-    auto slot = PackedRecordSlot {.layout = layout,
-                                  .recordOffset = recordOffset,
-                                  .pathDepth = position.packedPathDepth,
-                                  .prefixField = position.packedPrefixField};
-    reflectFromHeader(
-        value, document, makePackedRecordHeader(recordOffset), result, slot);
+    auto slot = PackedRecordSlot {
+        .layout = layout, .recordOffset = recordOffset, .path = position.packedPath};
+    reflectFrom(value,
+                {.document = document,
+                 .header = makePackedRecordHeader(recordOffset),
+                 .packedRecord = slot},
+                result);
 }
 
 template <typename T>
@@ -206,8 +197,10 @@ void loadView(T& value, const View& view, LoadResult& result)
     if (position.elementEncoding == Encoding::PackedStruct)
         loadPackedRecordView(value, document, position, result);
     else
-        reflectFromHeader(
-            value, document, readViewHeader(document, position), result);
+        reflectFrom(
+            value,
+            {.document = document, .header = readViewHeader(document, position)},
+            result);
 }
 
 template <typename T>

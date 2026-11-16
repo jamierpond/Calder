@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Forward.h"
 #include "InternedKeyTable.h"
 #include "LittleEndian.h"
 
@@ -14,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <variant>
 #include <vector>
 
@@ -193,12 +195,6 @@ Buffer makeFrame(FrameKind kind,
 // if `journal` is not a readable journal.
 InternedKeyTable readJournalKeyTable(std::span<const std::uint8_t> journal);
 
-inline std::uint64_t encodeZigzag(std::int64_t value)
-{
-    return (static_cast<std::uint64_t>(value) << 1)
-           ^ static_cast<std::uint64_t>(value >> 63);
-}
-
 inline std::int64_t decodeZigzag(std::uint64_t value)
 {
     return static_cast<std::int64_t>(value >> 1)
@@ -283,7 +279,13 @@ public:
         writeByte(static_cast<std::uint8_t>(value));
     }
 
-    void writeZigzag(std::int64_t value) { writeVarint(encodeZigzag(value)); }
+    void writeZigzag(std::int64_t value)
+    {
+        constexpr auto signBitShift = 63;
+        auto zigzag = (static_cast<std::uint64_t>(value) << 1)
+                      ^ static_cast<std::uint64_t>(value >> signBitShift);
+        writeVarint(zigzag);
+    }
 
     void writeString(std::string_view text)
     {
@@ -296,7 +298,14 @@ public:
         if (!journalKeyTable)
             return keyTable.getInternedKeyId(key);
 
-        return getJournalKeyId(key);
+        if (auto id = journalKeyTable->get().findInternedKeyId(key))
+            return *id;
+
+        if (std::ranges::find(keysMissingFromJournal, key)
+            == keysMissingFromJournal.end())
+            keysMissingFromJournal.emplace_back(key);
+
+        return 0;
     }
 
     void truncateTo(std::size_t newSizeInBytes) { buffer.resize(newSizeInBytes); }
@@ -331,26 +340,6 @@ public:
     }
 
 private:
-    std::uint32_t getJournalKeyId(std::string_view key)
-    {
-        auto id = journalKeyTable->get().findInternedKeyId(key);
-
-        if (!id)
-        {
-            recordKeyMissingFromJournal(key);
-            return 0;
-        }
-
-        return *id;
-    }
-
-    void recordKeyMissingFromJournal(std::string_view key)
-    {
-        if (std::ranges::find(keysMissingFromJournal, key)
-            == keysMissingFromJournal.end())
-            keysMissingFromJournal.emplace_back(key);
-    }
-
     Buffer buffer;
     InternedKeyTable keyTable;
     std::optional<std::reference_wrapper<InternedKeyTable>> journalKeyTable;
@@ -474,6 +463,51 @@ enum class Encoding : std::uint8_t
 
 using Number = std::variant<std::int64_t, double>;
 
+// One fixed-width encoding and the C++ number type whose little-endian
+// bytes it stores.
+template <Encoding encodingToUse, FixedWidthNumber NumberToUse>
+struct FixedWidthEncoding
+{
+    static constexpr auto encoding = encodingToUse;
+    using Number = NumberToUse;
+};
+
+using FixedWidthEncodings =
+    std::tuple<FixedWidthEncoding<Encoding::Float32, float>,
+               FixedWidthEncoding<Encoding::Float64, double>,
+               FixedWidthEncoding<Encoding::Int8, std::int8_t>,
+               FixedWidthEncoding<Encoding::UInt8, std::uint8_t>,
+               FixedWidthEncoding<Encoding::Int16, std::int16_t>,
+               FixedWidthEncoding<Encoding::UInt16, std::uint16_t>,
+               FixedWidthEncoding<Encoding::Int32, std::int32_t>,
+               FixedWidthEncoding<Encoding::UInt32, std::uint32_t>,
+               FixedWidthEncoding<Encoding::Int64, std::int64_t>,
+               FixedWidthEncoding<Encoding::UInt64, std::uint64_t>>;
+
+// Calls `visitor` with the FixedWidthEncoding row of `encoding`. False when
+// the encoding has no fixed width.
+template <typename Visitor>
+bool visitFixedWidthEncoding(Encoding encoding, Visitor&& visitor)
+{
+    auto visitMatchingRow = [&]<typename... Rows>(std::tuple<Rows...>*)
+    { return ((encoding == Rows::encoding && (visitor(Rows {}), true)) || ...); };
+    return visitMatchingRow(static_cast<FixedWidthEncodings*>(nullptr));
+}
+
+// The encoding whose bytes are exactly `T`'s, little-endian.
+template <FixedWidthNumber T>
+constexpr Encoding getFixedWidthEncoding()
+{
+    auto findMatchingRow = []<typename... Rows>(std::tuple<Rows...>*)
+    {
+        auto found = Encoding::Tagged;
+        ((std::same_as<T, typename Rows::Number> ? (found = Rows::encoding) : found),
+         ...);
+        return found;
+    };
+    return findMatchingRow(static_cast<FixedWidthEncodings*>(nullptr));
+}
+
 // Zero for Tagged and varint encodings.
 std::size_t getFixedByteWidth(Encoding encoding);
 
@@ -486,10 +520,6 @@ bool skipElements(ByteReader& reader, Encoding encoding, std::size_t count);
 
 // Advances past one whole value, tag included.
 bool skipValue(ByteReader& reader);
-
-bool doesValueEndAt(std::span<const std::uint8_t> data,
-                    std::size_t valueOffset,
-                    std::size_t expectedEndOffset);
 
 // One value's header. Containers get their payload range and element
 // count, clamped to the buffer; numbers get where their bytes start.
@@ -540,17 +570,14 @@ bool readStoredPackedLayout(const Document& document,
                             const ValueHeader& header,
                             StoredPackedLayout& layout);
 
-// The field whose path, below the first `depth` segments of field
-// `prefixField`'s path, continues with `key`.
+// The field whose path continues `place` with `key`.
 std::optional<std::size_t> findPackedFieldAtDepth(const StoredPackedLayout& layout,
-                                                  std::size_t prefixField,
-                                                  std::size_t depth,
+                                                  const PackedPathPrefix& place,
                                                   std::string_view key);
 
-// The distinct path segments at `depth` below that prefix, in layout order.
+// The distinct path segments that follow `place`, in layout order.
 std::vector<std::string_view> listPackedKeysAtDepth(const StoredPackedLayout& layout,
-                                                    std::size_t prefixField,
-                                                    std::size_t depth);
+                                                    const PackedPathPrefix& place);
 
 std::optional<PackedFieldType> findPackedFieldType(std::uint8_t wireByte);
 std::optional<PackedFieldType> findPackedFieldType(Encoding encoding);
@@ -615,16 +642,16 @@ public:
 
     std::size_t getKeyCount() const { return getKeyNames().size(); }
 
-    bool hasKeyId(std::uint64_t id) const { return id < getKeyNames().size(); }
-
-    std::string_view getKeyName(std::uint64_t id) const
+    // nullopt for an id the key table lacks.
+    std::optional<std::string_view> findKeyName(std::uint64_t id) const
     {
         auto keyNames = getKeyNames();
-        return id < keyNames.size() ? keyNames[id] : std::string_view {};
-    }
 
-private:
-    bool readKeyTable(std::size_t tableOffset);
+        if (id >= keyNames.size())
+            return std::nullopt;
+
+        return keyNames[id];
+    }
 
     std::span<const std::string_view> getKeyNames() const
     {
@@ -633,6 +660,9 @@ private:
 
         return keyNamesById;
     }
+
+private:
+    bool readKeyTable(std::size_t tableOffset);
 
     std::span<const std::uint8_t> data {};
     std::size_t rootValueOffset = headerSize;

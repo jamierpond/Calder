@@ -66,20 +66,18 @@ View findPackedRecordField(const Document& document,
     if (!layout)
         return {};
 
-    auto fieldIndex = findPackedFieldAtDepth(
-        *layout, record.packedPrefixField, record.packedPathDepth, key);
+    auto fieldIndex = findPackedFieldAtDepth(*layout, record.packedPath, key);
 
     if (!fieldIndex)
         return {};
 
     const auto& field = layout->fields[*fieldIndex];
-    auto childDepth = record.packedPathDepth + 1;
+    auto childDepth = record.packedPath.depth + 1;
 
     if (layout->getPath(field).size() > childDepth)
     {
         auto child = record;
-        child.packedPathDepth = childDepth;
-        child.packedPrefixField = *fieldIndex;
+        child.packedPath = {.fieldIndex = *fieldIndex, .depth = childDepth};
         return ViewAccess::makeView(document, child);
     }
 
@@ -98,8 +96,7 @@ std::vector<std::string_view> listPackedRecordKeys(const Document& document,
     if (!layout)
         return {};
 
-    return listPackedKeysAtDepth(
-        *layout, record.packedPrefixField, record.packedPathDepth);
+    return listPackedKeysAtDepth(*layout, record.packedPath);
 }
 
 View findPackedRecord(const Document& document,

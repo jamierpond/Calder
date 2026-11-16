@@ -242,33 +242,6 @@ bool convertPackedElement(const Number& number, T& element)
     return convertDecodedNumber(number, element);
 }
 
-// The encoding whose bytes are exactly this C++ number type's,
-// little-endian.
-template <typename T>
-constexpr Encoding getFixedWidthEncoding()
-{
-    if constexpr (std::same_as<T, float>)
-        return Encoding::Float32;
-    else if constexpr (std::same_as<T, double>)
-        return Encoding::Float64;
-    else if constexpr (std::same_as<T, std::int8_t>)
-        return Encoding::Int8;
-    else if constexpr (std::same_as<T, std::uint8_t>)
-        return Encoding::UInt8;
-    else if constexpr (std::same_as<T, std::int16_t>)
-        return Encoding::Int16;
-    else if constexpr (std::same_as<T, std::uint16_t>)
-        return Encoding::UInt16;
-    else if constexpr (std::same_as<T, std::int32_t>)
-        return Encoding::Int32;
-    else if constexpr (std::same_as<T, std::uint32_t>)
-        return Encoding::UInt32;
-    else if constexpr (std::same_as<T, std::int64_t>)
-        return Encoding::Int64;
-    else
-        return Encoding::UInt64;
-}
-
 template <typename T>
 bool canCopyRawBytes(Encoding encoding)
 {
@@ -281,7 +254,9 @@ Encoding getFixedWidthEncoding(const NumberTypeTag& type)
 {
     return std::visit(
         [](auto typeTag)
-        { return getFixedWidthEncoding<typename decltype(typeTag)::type>(); },
+        {
+            return Detail::getFixedWidthEncoding<typename decltype(typeTag)::type>();
+        },
         type);
 }
 
@@ -373,22 +348,33 @@ bool arePathsEqual(std::span<const std::string_view> first,
     return std::ranges::equal(first, second);
 }
 
+bool doesStoredFieldMatchElementField(const StoredPackedLayout& layout,
+                                      const StoredPackedField& stored,
+                                      const Miro::PackedStructField& wanted)
+{
+    return stored.offsetInRecord == wanted.offset
+           && stored.encoding == getFixedWidthEncoding(wanted.type)
+           && arePathsEqual(layout.getPath(stored), wanted.path);
+}
+
+bool doRecordsHaveElementShape(const StoredPackedLayout& layout,
+                               const PackedStructArrayRef& ref)
+{
+    return isHostLittleEndian && layout.recordSize == ref.stride
+           && layout.fields.size() == ref.fields.size();
+}
+
 // True when the stored records are byte for byte the C++ elements.
 bool areRecordsLaidOutAsElements(const StoredPackedLayout& layout,
                                  const PackedStructArrayRef& ref)
 {
-    if (!isHostLittleEndian || layout.recordSize != ref.stride
-        || layout.fields.size() != ref.fields.size())
+    if (!doRecordsHaveElementShape(layout, ref))
         return false;
 
     for (auto i = std::size_t {0}; i < ref.fields.size(); ++i)
     {
-        const auto& stored = layout.fields[i];
-        const auto& wanted = ref.fields[i];
-
-        if (stored.offsetInRecord != wanted.offset
-            || stored.encoding != getFixedWidthEncoding(wanted.type)
-            || !arePathsEqual(layout.getPath(stored), wanted.path))
+        if (!doesStoredFieldMatchElementField(
+                layout, layout.fields[i], ref.fields[i]))
             return false;
     }
 
@@ -472,10 +458,10 @@ std::vector<PackedFieldCopy> planPackedFieldCopies(const StoredPackedLayout& lay
 void readPackedRecordsFieldByField(const StoredPackedLayout& layout,
                                    std::span<const std::uint8_t> records,
                                    const PackedStructArrayRef& ref,
-                                   std::size_t count,
                                    const RefusedElementReporter& reportRefused)
 {
     auto copies = planPackedFieldCopies(layout, ref);
+    auto count = records.size() / layout.recordSize;
 
     for (auto i = std::size_t {0}; i < count; ++i)
     {
@@ -492,26 +478,34 @@ void readPackedRecordsFieldByField(const StoredPackedLayout& layout,
 }
 
 template <typename T>
-void readPackedElements(ByteReader& reader,
-                        Encoding encoding,
-                        std::span<T> dest,
-                        const RefusedElementReporter& reportRefused)
+void convertPackedElements(ByteReader& reader,
+                           Encoding encoding,
+                           std::span<T> dest,
+                           const RefusedElementReporter& reportRefused)
 {
-    if (canCopyRawBytes<T>(encoding))
-    {
-        auto bytes = reader.readBytes(dest.size_bytes());
-
-        if (reader.hasReadEverythingInBounds)
-            decodeLittleEndianElements(bytes, dest);
-
-        return;
-    }
-
     for (auto i = std::size_t {0}; i < dest.size(); ++i)
     {
         if (!convertPackedElement(readNumber(reader, encoding), dest[i]))
             reportRefused(i);
     }
+}
+
+template <typename T>
+void readPackedElements(ByteReader& reader,
+                        Encoding encoding,
+                        std::span<T> dest,
+                        const RefusedElementReporter& reportRefused)
+{
+    if (!canCopyRawBytes<T>(encoding))
+    {
+        convertPackedElements(reader, encoding, dest, reportRefused);
+        return;
+    }
+
+    auto bytes = reader.readBytes(dest.size_bytes());
+
+    if (reader.hasReadEverythingInBounds)
+        decodeLittleEndianElements(bytes, dest);
 }
 
 constexpr auto maxKeptFieldProblems = std::size_t {64};
@@ -715,17 +709,13 @@ void Writer::resizeArray(std::size_t newSize)
     slot.elementCount = std::max(slot.elementCount, newSize);
 }
 
-Reader::Reader(const Document& documentToUse,
-               const ValueHeader& headerToUse,
-               Options optsToUse,
-               LoadResult& resultToUse,
-               std::optional<PackedRecordSlot> packedRecordToUse)
+Reader::Reader(const ReadStart& start, Options optsToUse, LoadResult& resultToUse)
     : Reflector(std::move(optsToUse))
-    , document(documentToUse)
-    , header(headerToUse)
+    , document(start.document)
+    , header(start.header)
     , result(resultToUse)
-    , resumeOffset(headerToUse.payloadOffset)
-    , packedRecord(packedRecordToUse)
+    , resumeOffset(start.header.payloadOffset)
+    , packedRecord(start.packedRecord)
 {
 }
 
@@ -936,7 +926,7 @@ bool Reader::visitPackedStructs(PackedStructArrayRef ref)
         std::memcpy(ref.elementBytes.data(), records.data(), records.size());
     else
         readPackedRecordsFieldByField(
-            layout, records, ref, count, makeRefusedElementReporter());
+            layout, records, ref, makeRefusedElementReporter());
 
     return true;
 }
@@ -1048,17 +1038,14 @@ Reflector& Reader::spawnPackedRecordChild(std::size_t index, Options&& childOpts
 std::optional<std::size_t>
     Reader::findPackedFieldAtThisDepth(std::string_view key) const
 {
-    return findPackedFieldAtDepth(packedRecord->layout.get(),
-                                  packedRecord->prefixField,
-                                  packedRecord->pathDepth,
-                                  key);
+    return findPackedFieldAtDepth(
+        packedRecord->layout.get(), packedRecord->path, key);
 }
 
 void Reader::appendPackedRecordKeys(Vector<std::string>& keys) const
 {
-    for (auto key: listPackedKeysAtDepth(packedRecord->layout.get(),
-                                         packedRecord->prefixField,
-                                         packedRecord->pathDepth))
+    for (auto key:
+         listPackedKeysAtDepth(packedRecord->layout.get(), packedRecord->path))
         keys.add(std::string {key});
 }
 
@@ -1074,7 +1061,7 @@ Reflector& Reader::spawnPackedFieldChild(std::string_view key, Options&& childOp
 
     const auto& layout = packedRecord->layout.get();
     const auto& field = layout.fields[*fieldIndex];
-    auto childDepth = packedRecord->pathDepth + 1;
+    auto childDepth = packedRecord->path.depth + 1;
 
     if (layout.getPath(field).size() == childDepth)
         return spawnChild(key,
@@ -1083,13 +1070,13 @@ Reflector& Reader::spawnPackedFieldChild(std::string_view key, Options&& childOp
                                                       + field.offsetInRecord),
                           std::move(childOpts));
 
-    return spawnChild(key,
-                      makePackedRecordHeader(packedRecord->recordOffset),
-                      std::move(childOpts),
-                      PackedRecordSlot {.layout = layout,
-                                        .recordOffset = packedRecord->recordOffset,
-                                        .pathDepth = childDepth,
-                                        .prefixField = *fieldIndex});
+    return spawnChild(
+        key,
+        makePackedRecordHeader(packedRecord->recordOffset),
+        std::move(childOpts),
+        PackedRecordSlot {.layout = layout,
+                          .recordOffset = packedRecord->recordOffset,
+                          .path = {.fieldIndex = *fieldIndex, .depth = childDepth}});
 }
 
 Reflector& Reader::spawnMissingChild(StepFromParent step, Options&& childOpts)
