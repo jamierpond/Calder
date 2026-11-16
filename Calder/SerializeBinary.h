@@ -13,7 +13,7 @@
 
 // Binary counterparts of toJSON / fromJSON. Loads never throw: missing
 // keys and mismatched types keep prior values. fromBinary also reads
-// journals ("MIBJ"), replaying their frames into std::map<std::string, V>.
+// journals ("CLDJ"), replaying their frames into std::map<std::string, V>.
 
 namespace Calder
 {

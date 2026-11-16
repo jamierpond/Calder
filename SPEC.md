@@ -10,13 +10,13 @@ objects with named fields, arrays, strings, numbers, booleans and null.
 
 There are two kinds of file:
 
-- A **document** (starts with the four ASCII bytes `MIB1`) holds one value.
-- A **journal** (starts with `MIBJ`) holds a document plus a list of later
+- A **document** (starts with the four ASCII bytes `CLD1`) holds one value.
+- A **journal** (starts with `CLDJ`) holds a document plus a list of later
   changes to it, appended one at a time. The changes name their fields
   through the document's key table.
 
-emberstore stores these in files ending `.ember`. A stored file that starts
-with neither `MIB1` nor `MIBJ` is JSON text, not this format.
+Calder files end in `.calder`. A file that starts with neither `CLD1` nor
+`CLDJ` is not this format.
 
 The rules below are what the encoder in `Calder/` writes today (November
 2026). Where the C++ reader accepts more than
@@ -128,7 +128,7 @@ writing a field name inline.
 ## 2. Document layout
 
 ```
-offset 0   4 bytes   magic: ASCII "MIB1" = 4D 49 42 31
+offset 0   4 bytes   magic: ASCII "CLD1" = 43 4C 44 31
 offset 4   u32       key table offset: where the key table starts
 offset 8   value     the root value (any kind, section 3)
 ...        key table (section 4), starting at the key table offset,
@@ -147,7 +147,7 @@ name once it has written the whole value. A decoder reads the key table
 first (it needs the names to decode objects), then decodes the root value.
 
 The smallest document is 10 bytes, for a root of null:
-`4D 49 42 31  09 00 00 00  00  00`.
+`43 4C 44 31  09 00 00 00  00  00`.
 
 ---
 
@@ -395,7 +395,7 @@ name is stored once however many objects use it.
 
 ```
 decode_document(data):
-    check len(data) >= 10 and data[0:4] == "MIB1"
+    check len(data) >= 10 and data[0:4] == "CLD1"
     tableOffset = u32 at offset 4
     check 9 <= tableOffset <= len(data)
     names = read_key_table(data, tableOffset)        # must end exactly at len(data)
@@ -602,9 +602,9 @@ corrupt frame loses only itself.
 ### 6.1 Layout
 
 ```
-offset 0   4 bytes          magic: ASCII "MIBJ" = 4D 49 42 4A
+offset 0   4 bytes          magic: ASCII "CLDJ" = 43 4C 44 4A
 offset 4   u32              base size: the byte length of the base document
-offset 8   base size bytes  base document: a complete "MIB1" document (section 2)
+offset 8   base size bytes  base document: a complete "CLD1" document (section 2)
 then       frame*           frames, back to back, to the end of the file
 
 frame   := u8 kind | u32 payloadSize | payloadSize bytes of payload | u32 checksum
@@ -618,7 +618,7 @@ payload := varint keyLength | keyLength bytes of key | frameValue
   bytes.
 - **key** is the map key, as bytes (section 5.4).
 - **frameValue** is everything in the payload after the key. For a set
-  frame it is one value (section 3) and nothing else: no `MIB1` magic, no
+  frame it is one value (section 3) and nothing else: no `CLD1` magic, no
   key table offset, no key table. The value fills the rest of the payload
   exactly. Its Object key ids index the base document's key table (section
   4). Map keys are inline as always (section 3.6). For a remove frame
@@ -644,7 +644,7 @@ fnv1a32(bytes):
 
 ```
 read_journal(data):
-    check len(data) >= 8 and data[0:4] == "MIBJ"
+    check len(data) >= 8 and data[0:4] == "CLDJ"
     baseSize = u32 at offset 4
     check baseSize <= len(data) - 8               # otherwise the journal is invalid
     base = data[8 : 8 + baseSize]
@@ -742,7 +742,7 @@ decoder reports an error rather than returning part of a tree. (Journals are
 the exception: section 6.2 says which frame failures skip a frame and which
 stop reading.)
 
-1. The document is at least 10 bytes and starts with `MIB1`.
+1. The document is at least 10 bytes and starts with `CLD1`.
 2. The key table offset is at least 9 and at most the document length.
 3. The key table: its count is no larger than the bytes left after the count
    varint (each name takes at least one byte), every name lies inside the
@@ -943,7 +943,7 @@ Caption: `struct Track { std::string title; int bpm; }` and
 `{"Mix", {{"A", 120}, {"B", 90}}}`.
 
 ```
-4D 49 42 31 37 00 00 00 07 2A 00 00 00 00 06 03
+43 4C 44 31 37 00 00 00 07 2A 00 00 00 00 06 03
 4D 69 78 01 09 1E 00 00 00 02 00 00 00 07 08 00
 00 00 02 06 01 41 03 03 F0 01 07 08 00 00 00 02
 06 01 42 03 03 B4 01 04 04 6E 61 6D 65 06 74 72
@@ -951,7 +951,7 @@ Caption: `struct Track { std::string title; int bpm; }` and
 ```
 
 ```
-@0   4D 49 42 31   magic "MIB1"
+@0   43 4C 44 31   magic "CLD1"
 @4   37 00 00 00   key table offset = 55
 @8   07            Object
 @9   2A 00 00 00     payload size = 42 (offsets 13..54)
@@ -994,7 +994,7 @@ level; std::vector<double> curve; }`, value `{{0.5f, 1.0f}, 0.1, 0.25,
 {0.1, 2.0}}`.
 
 ```
-4D 49 42 31 41 00 00 00 07 34 00 00 00 00 0A 02
+43 4C 44 31 41 00 00 00 07 34 00 00 00 00 0A 02
 00 00 00 00 00 00 3F 00 00 80 3F 01 04 9A 99 99
 99 99 99 B9 3F 02 05 00 00 80 3E 03 0B 02 00 00
 00 9A 99 99 99 99 99 B9 3F 00 00 00 00 00 00 00
@@ -1003,7 +1003,7 @@ level; std::vector<double> curve; }`, value `{{0.5f, 1.0f}, 0.1, 0.25,
 ```
 
 ```
-@0   4D 49 42 31   magic
+@0   43 4C 44 31   magic
 @4   41 00 00 00   key table offset = 65
 @8   07 34 00 00 00   Object, payload size 52
 @13  00              "gains"
@@ -1038,12 +1038,12 @@ Miro::Omittable<int> c; std::optional<std::vector<int>> d; }`, value with
 `a` empty, `b = 5`, `c` absent, `d` empty.
 
 ```
-4D 49 42 31 14 00 00 00 07 07 00 00 00 00 00 01
+43 4C 44 31 14 00 00 00 07 07 00 00 00 00 00 01
 03 0A 03 00 04 01 61 01 62 01 63 01 64
 ```
 
 ```
-@0   4D 49 42 31   magic
+@0   43 4C 44 31   magic
 @4   14 00 00 00   key table offset = 20
 @8   07 07 00 00 00   Object, payload size 7
 @13  00 00         "a": Null (empty optional keeps its key)
@@ -1068,13 +1068,13 @@ Caption: `struct Counts { std::map<std::string, int> counts; }`, value
 `{{"x", 1}, {"y", -2}}`.
 
 ```
-4D 49 42 31 1B 00 00 00 07 0E 00 00 00 00 08 08
+43 4C 44 31 1B 00 00 00 07 0E 00 00 00 00 08 08
 00 00 00 01 78 03 02 01 79 03 03 01 06 63 6F 75
 6E 74 73
 ```
 
 ```
-@0   4D 49 42 31   magic
+@0   43 4C 44 31   magic
 @4   1B 00 00 00   key table offset = 27
 @8   07 0E 00 00 00   Object, payload size 14
 @13  00              key id 0 = "counts"
@@ -1101,17 +1101,17 @@ Caption: `std::map<std::string, Inner>` where `struct Inner { int x; }`. Base
 `{"a": {x: 1}}`, then set `"b"` to `{x: 2}`, then remove `"a"`.
 
 ```
-4D 49 42 4A 1A 00 00 00 4D 49 42 31 17 00 00 00
+43 4C 44 4A 1A 00 00 00 43 4C 44 31 17 00 00 00
 08 0A 00 00 00 01 61 07 03 00 00 00 00 03 02 01
 01 78 01 0A 00 00 00 01 62 07 03 00 00 00 00 03
 04 4B 32 C9 8E 02 02 00 00 00 01 61 17 B6 74 4C
 ```
 
 ```
-@0   4D 49 42 4A        magic "MIBJ"
+@0   43 4C 44 4A        magic "CLDJ"
 @4   1A 00 00 00        base size = 26
 @8   base document (26 bytes, offsets below are within it):
-       +0   4D 49 42 31   "MIB1"
+       +0   43 4C 44 31   "CLD1"
        +4   17 00 00 00   key table offset = 23
        +8   08 0A 00 00 00     Map, payload size 10
        +13  01 61                key "a"
@@ -1154,7 +1154,7 @@ std::variant<int, std::string> either = "hi"; std::vector<std::uint64_t>
 big {1, UINT64_MAX}; }`, built with GCC and libstdc++.
 
 ```
-4D 49 42 31 2F 00 00 00 07 22 00 00 00 00 06 02
+43 4C 44 31 2F 00 00 00 07 22 00 00 00 00 06 02
 6F 6E 01 03 0E 02 03 01 03 07 05 00 00 00 04 06
 02 68 69 05 0D 06 00 00 00 02 00 00 00 02 01 06
 04 6D 6F 64 65 05 73 74 72 61 79 02 69 64 06 65
@@ -1188,7 +1188,7 @@ Vec2 at; }; struct Rig { std::vector<Marker> markers; }`, value
 padding bytes after `id`); each record is 10.
 
 ```
-4D 49 42 31 37 00 00 00 07 2A 00 00 00 00 12 24
+43 4C 44 31 37 00 00 00 07 2A 00 00 00 00 12 24
 00 00 00 02 00 00 00 03 01 01 02 02 02 03 08 02
 02 04 08 01 00 00 00 00 3F 00 00 80 3F FE FF 00
 00 00 40 00 00 80 3E 05 07 6D 61 72 6B 65 72 73
@@ -1196,7 +1196,7 @@ padding bytes after `id`); each record is 10.
 ```
 
 ```
-@0   4D 49 42 31   magic
+@0   43 4C 44 31   magic
 @4   37 00 00 00   key table offset = 55
 @8   07 2A 00 00 00   Object, payload size 42
 @13  00              "markers"

@@ -1,6 +1,6 @@
 from .decoder import (
     JournalReport,
-    MibError,
+    CalderError,
     decode,
     decode_document,
     fnv1a32,

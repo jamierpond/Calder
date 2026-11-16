@@ -11,12 +11,12 @@ made only of numbers, are stored as one block of raw values. Every container
 records its size, so a reader can skip it without decoding it.
 
 - [`SPEC.md`](SPEC.md): the format, byte by byte, with worked examples.
-- [`python/mib`](python/mib): a decoder written from the spec alone, to show
+- [`python/calder`](python/calder): a decoder written from the spec alone, to show
   the format is a protocol, not a C++ memory dump. Standard library only.
 
 ```sh
-cd python && python3 -m mib some-file.mib     # prints the file as JSON
-python3 -m unittest mib.test_mib              # the decoder's tests
+cd python && python3 -m calder some-file.calder   # prints the file as JSON
+python3 -m unittest calder.test_calder            # the decoder's tests
 ```
 
 The C++ encoder and decoder are in [`Calder/`](Calder) and reflect plain
@@ -55,6 +55,7 @@ cmake --build build && ctest --test-dir build
 
 Use it from another CMake project with
 `CPMAddPackage(NAME Calder GITHUB_REPOSITORY jamierpond/Calder GIT_TAG <sha>)`
-and link `calder`. Files start
-with the magic `MIB1` (a document) or `MIBJ` (a journal); the magic will follow
-the name in a later version.
+and link `calder`. Calder files end in `.calder` and start with the magic
+`CLD1` (a document) or `CLDJ` (a journal).
+
+Calder is released under the [MIT license](LICENSE).

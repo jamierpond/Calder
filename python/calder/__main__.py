@@ -1,7 +1,7 @@
 import argparse
 import sys
 
-from .decoder import JournalReport, MibError, decode, to_json_text
+from .decoder import JournalReport, CalderError, decode, to_json_text
 
 
 def print_journal_report(report):
@@ -14,7 +14,7 @@ def print_journal_report(report):
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="mib", description="Decode an MIB1 document or MIBJ journal to JSON.")
+    parser = argparse.ArgumentParser(prog="calder", description="Decode an CLD1 document or CLDJ journal to JSON.")
     parser.add_argument("file")
     parser.add_argument("--indent", type=int, default=None)
     arguments = parser.parse_args()
@@ -22,8 +22,8 @@ def main():
         data = handle.read()
     try:
         result = decode(data)
-    except MibError as error:
-        print(f"mib: {arguments.file}: {error}", file=sys.stderr)
+    except CalderError as error:
+        print(f"calder: {arguments.file}: {error}", file=sys.stderr)
         return 1
     if isinstance(result, JournalReport):
         print_journal_report(result)

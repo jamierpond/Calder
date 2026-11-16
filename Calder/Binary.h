@@ -17,9 +17,9 @@
 #include <variant>
 #include <vector>
 
-// Miro binary wire format ("MIB1"). Fixed-width fields are little-endian.
+// Miro binary wire format ("CLD1"). Fixed-width fields are little-endian.
 //
-//   file      := "MIB1" | u32 keyTableOffset | value | keyTable
+//   file      := "CLD1" | u32 keyTableOffset | value | keyTable
 //   keyTable  := varint keyCount | { varint length | bytes }*
 //   value     := tag byte | payload
 //
@@ -45,9 +45,9 @@
 //
 // payloadSize counts the bytes after the size field itself.
 //
-// Journal ("MIBJ"), for map-shaped values that grow one entry at a time:
+// Journal ("CLDJ"), for map-shaped values that grow one entry at a time:
 //
-//   journal := "MIBJ" | u32 baseSize | baseDoc (a "MIB1" file) | frame*
+//   journal := "CLDJ" | u32 baseSize | baseDoc (a "CLD1" file) | frame*
 //   frame   := u8 kind (1 set, 2 remove) | u32 payloadSize | payload
 //              | u32 calculateFnv1aChecksum(payload)
 //   payload := varint keyLength | key | [value, for set]
@@ -127,8 +127,8 @@ enum class PackedFieldType : std::uint8_t
 };
 
 inline constexpr auto npos = static_cast<std::size_t>(-1);
-inline constexpr std::array<std::uint8_t, 4> magic {'M', 'I', 'B', '1'};
-inline constexpr std::array<std::uint8_t, 4> journalMagic {'M', 'I', 'B', 'J'};
+inline constexpr std::array<std::uint8_t, 4> magic {'C', 'L', 'D', '1'};
+inline constexpr std::array<std::uint8_t, 4> journalMagic {'C', 'L', 'D', 'J'};
 inline constexpr std::size_t headerFieldOffset = magic.size();
 inline constexpr std::size_t headerSize = headerFieldOffset + sizeof(std::uint32_t);
 

@@ -2,7 +2,7 @@ import math
 import struct
 import unittest
 
-from mib import MibError, decode, decode_document, fnv1a32, read_journal, to_json_text
+from calder import CalderError, decode, decode_document, fnv1a32, read_journal, to_json_text
 
 
 def from_hex(text):
@@ -15,7 +15,7 @@ def u32(value):
 
 def document(root_bytes, names=()):
     table = bytes([len(names)]) + b"".join(bytes([len(name)]) + name for name in names)
-    return b"MIB1" + u32(8 + len(root_bytes)) + root_bytes + table
+    return b"CLD1" + u32(8 + len(root_bytes)) + root_bytes + table
 
 
 def sized(tag, payload):
@@ -29,18 +29,18 @@ def frame(kind, payload, checksum=None):
 
 
 def journal(base, frames=b""):
-    return b"MIBJ" + u32(len(base)) + base + frames
+    return b"CLDJ" + u32(len(base)) + base + frames
 
 
 EXAMPLE_NESTED = from_hex(
-    "4D 49 42 31 37 00 00 00 07 2A 00 00 00 00 06 03"
+    "43 4C 44 31 37 00 00 00 07 2A 00 00 00 00 06 03"
     "4D 69 78 01 09 1E 00 00 00 02 00 00 00 07 08 00"
     "00 00 02 06 01 41 03 03 F0 01 07 08 00 00 00 02"
     "06 01 42 03 03 B4 01 04 04 6E 61 6D 65 06 74 72"
     "61 63 6B 73 05 74 69 74 6C 65 03 62 70 6D"
 )
 EXAMPLE_PACKED_FLOATS = from_hex(
-    "4D 49 42 31 41 00 00 00 07 34 00 00 00 00 0A 02"
+    "43 4C 44 31 41 00 00 00 07 34 00 00 00 00 0A 02"
     "00 00 00 00 00 00 3F 00 00 80 3F 01 04 9A 99 99"
     "99 99 99 B9 3F 02 05 00 00 80 3E 03 0B 02 00 00"
     "00 9A 99 99 99 99 99 B9 3F 00 00 00 00 00 00 00"
@@ -48,22 +48,22 @@ EXAMPLE_PACKED_FLOATS = from_hex(
     "6C 65 76 65 6C 05 63 75 72 76 65"
 )
 EXAMPLE_OPTIONALS = from_hex(
-    "4D 49 42 31 14 00 00 00 07 07 00 00 00 00 00 01"
+    "43 4C 44 31 14 00 00 00 07 07 00 00 00 00 00 01"
     "03 0A 03 00 04 01 61 01 62 01 63 01 64"
 )
 EXAMPLE_MAP = from_hex(
-    "4D 49 42 31 1B 00 00 00 07 0E 00 00 00 00 08 08"
+    "43 4C 44 31 1B 00 00 00 07 0E 00 00 00 00 08 08"
     "00 00 00 01 78 03 02 01 79 03 03 01 06 63 6F 75"
     "6E 74 73"
 )
 EXAMPLE_JOURNAL = from_hex(
-    "4D 49 42 4A 1A 00 00 00 4D 49 42 31 17 00 00 00"
+    "43 4C 44 4A 1A 00 00 00 43 4C 44 31 17 00 00 00"
     "08 0A 00 00 00 01 61 07 03 00 00 00 00 03 02 01"
     "01 78 01 0A 00 00 00 01 62 07 03 00 00 00 00 03"
     "04 4B 32 C9 8E 02 02 00 00 00 01 61 17 B6 74 4C"
 )
 EXAMPLE_LEAKS = from_hex(
-    "4D 49 42 31 2F 00 00 00 07 22 00 00 00 00 06 02"
+    "43 4C 44 31 2F 00 00 00 07 22 00 00 00 00 06 02"
     "6F 6E 01 03 0E 02 03 01 03 07 05 00 00 00 04 06"
     "02 68 69 05 0D 06 00 00 00 02 00 00 00 02 01 06"
     "04 6D 6F 64 65 05 73 74 72 61 79 02 69 64 06 65"
@@ -72,7 +72,7 @@ EXAMPLE_LEAKS = from_hex(
 )
 
 EXAMPLE_PACKED_STRUCTS = from_hex(
-    "4D 49 42 31 37 00 00 00 07 2A 00 00 00 00 12 24"
+    "43 4C 44 31 37 00 00 00 07 2A 00 00 00 00 12 24"
     "00 00 00 02 00 00 00 03 01 01 02 02 02 03 08 02"
     "02 04 08 01 00 00 00 00 3F 00 00 80 3F FE FF 00"
     "00 00 40 00 00 80 3E 05 07 6D 61 72 6B 65 72 73"
@@ -135,7 +135,7 @@ class WorkedExamples(unittest.TestCase):
         )
 
     def test_smallest_document(self):
-        self.assertIsNone(decode_document(from_hex("4D 49 42 31 09 00 00 00 00 00")))
+        self.assertIsNone(decode_document(from_hex("43 4C 44 31 09 00 00 00 00 00")))
 
 
 class PrimitiveExamples(unittest.TestCase):
@@ -199,27 +199,27 @@ class PrimitiveExamples(unittest.TestCase):
 
 class ValidationRules(unittest.TestCase):
     def assertRejected(self, data, fragment):
-        with self.assertRaises(MibError) as caught:
+        with self.assertRaises(CalderError) as caught:
             decode_document(data)
         self.assertIn(fragment, str(caught.exception))
 
     def test_rule1_too_short_or_wrong_magic(self):
-        self.assertRejected(from_hex("4D 49 42 31 09 00 00 00 00"), "shorter than 10")
-        self.assertRejected(b"MIB2" + EXAMPLE_MAP[4:], "MIB1")
+        self.assertRejected(from_hex("43 4C 44 31 09 00 00 00 00"), "shorter than 10")
+        self.assertRejected(b"CLD2" + EXAMPLE_MAP[4:], "CLD1")
 
     def test_rule2_key_table_offset_range(self):
-        self.assertRejected(b"MIB1" + u32(8) + from_hex("00 00"), "key table offset")
-        self.assertRejected(b"MIB1" + u32(11) + from_hex("00 00"), "key table offset")
+        self.assertRejected(b"CLD1" + u32(8) + from_hex("00 00"), "key table offset")
+        self.assertRejected(b"CLD1" + u32(11) + from_hex("00 00"), "key table offset")
 
     def test_rule3_key_table(self):
-        self.assertRejected(b"MIB1" + u32(9) + from_hex("00 05 00"), "key table count")
-        self.assertRejected(b"MIB1" + u32(9) + from_hex("00 01 05 61"), "key table name")
-        self.assertRejected(b"MIB1" + u32(9) + from_hex("00 00 00"), "after the key table")
-        self.assertRejected(b"MIB1" + u32(9) + from_hex("00 80"), "key table count")
+        self.assertRejected(b"CLD1" + u32(9) + from_hex("00 05 00"), "key table count")
+        self.assertRejected(b"CLD1" + u32(9) + from_hex("00 01 05 61"), "key table name")
+        self.assertRejected(b"CLD1" + u32(9) + from_hex("00 00 00"), "after the key table")
+        self.assertRejected(b"CLD1" + u32(9) + from_hex("00 80"), "key table count")
 
     def test_rule4_root_ends_at_key_table(self):
-        self.assertRejected(b"MIB1" + u32(10) + from_hex("00 00 00"), "root value ends")
-        self.assertRejected(b"MIB1" + u32(9) + from_hex("03 00"), "Int")
+        self.assertRejected(b"CLD1" + u32(10) + from_hex("00 00 00"), "root value ends")
+        self.assertRejected(b"CLD1" + u32(9) + from_hex("03 00"), "Int")
 
     def test_rule5_unknown_tag(self):
         self.assertRejected(document(from_hex("13")), "unknown tag 19")
@@ -291,10 +291,10 @@ class JournalRules(unittest.TestCase):
         return frame(1, bytes([len(key)]) + key + frame_value)
 
     def test_bad_header_is_an_error(self):
-        with self.assertRaises(MibError):
-            read_journal(b"MIBJ" + u32(5))
-        with self.assertRaises(MibError):
-            read_journal(b"MIBJ" + u32(100) + self.base_with_a)
+        with self.assertRaises(CalderError):
+            read_journal(b"CLDJ" + u32(5))
+        with self.assertRaises(CalderError):
+            read_journal(b"CLDJ" + u32(100) + self.base_with_a)
 
     def test_replay_set_remove_set(self):
         frames = (
@@ -318,7 +318,7 @@ class JournalRules(unittest.TestCase):
         self.assertEqual(len(report.skipped_frames), 3)
 
     def test_set_frame_with_bad_value_is_skipped(self):
-        report = read_journal(journal(self.base_with_a, self.set_frame(b"a", b"MIB1")))
+        report = read_journal(journal(self.base_with_a, self.set_frame(b"a", b"CLD1")))
         self.assertEqual(report.tree, {"a": 1})
         self.assertEqual(len(report.skipped_frames), 1)
 

@@ -3,8 +3,8 @@ import math
 import struct
 from dataclasses import dataclass, field
 
-DOCUMENT_MAGIC = b"MIB1"
-JOURNAL_MAGIC = b"MIBJ"
+DOCUMENT_MAGIC = b"CLD1"
+JOURNAL_MAGIC = b"CLDJ"
 MINIMUM_DOCUMENT_SIZE = 10
 MINIMUM_KEY_TABLE_OFFSET = 9
 ROOT_VALUE_OFFSET = 8
@@ -48,7 +48,7 @@ FIXED_WIDTH_PACKED_FORMATS = {
 }
 
 
-class MibError(ValueError):
+class CalderError(ValueError):
     def __init__(self, offset, message):
         super().__init__(f"offset {offset}: {message}")
         self.offset = offset
@@ -63,7 +63,7 @@ class Reader:
 
     def require(self, byte_count, what):
         if byte_count > self.limit - self.offset:
-            raise MibError(self.offset, f"{what} runs past the end of its container")
+            raise CalderError(self.offset, f"{what} runs past the end of its container")
 
     def read_bytes(self, byte_count, what):
         self.require(byte_count, what)
@@ -85,9 +85,9 @@ class Reader:
             result |= (byte & 0x7F) << (7 * index)
             if byte & 0x80 == 0:
                 if index == MAX_VARINT_BYTES - 1 and byte > 0x01:
-                    raise MibError(start, f"{what}: varint overflows 64 bits")
+                    raise CalderError(start, f"{what}: varint overflows 64 bits")
                 return result
-        raise MibError(start, f"{what}: varint longer than 10 bytes")
+        raise CalderError(start, f"{what}: varint longer than 10 bytes")
 
     def read_zigzag(self, what):
         unsigned = self.read_varint(what)
@@ -102,17 +102,17 @@ class Reader:
         try:
             return raw.decode("utf-8")
         except UnicodeDecodeError as error:
-            raise MibError(start + error.start, f"{what} is not valid UTF-8") from None
+            raise CalderError(start + error.start, f"{what} is not valid UTF-8") from None
 
 
 def read_document_key_names(data):
     if len(data) < MINIMUM_DOCUMENT_SIZE:
-        raise MibError(0, f"document is {len(data)} bytes, shorter than 10")
+        raise CalderError(0, f"document is {len(data)} bytes, shorter than 10")
     if data[:4] != DOCUMENT_MAGIC:
-        raise MibError(0, "document does not start with MIB1")
+        raise CalderError(0, "document does not start with CLD1")
     table_offset = struct.unpack_from("<I", data, 4)[0]
     if not MINIMUM_KEY_TABLE_OFFSET <= table_offset <= len(data):
-        raise MibError(4, f"key table offset {table_offset} is outside 9..{len(data)}")
+        raise CalderError(4, f"key table offset {table_offset} is outside 9..{len(data)}")
     return read_key_table(data, table_offset), table_offset
 
 
@@ -122,7 +122,7 @@ def decode_document(data):
     reader = Reader(data, ROOT_VALUE_OFFSET, table_offset)
     root = decode_value(reader, names, 0)
     if reader.offset != table_offset:
-        raise MibError(reader.offset, f"root value ends before the key table at {table_offset}")
+        raise CalderError(reader.offset, f"root value ends before the key table at {table_offset}")
     return root
 
 
@@ -130,16 +130,16 @@ def read_key_table(data, table_offset):
     reader = Reader(data, table_offset, len(data))
     count = reader.read_varint("key table count")
     if count > len(data) - reader.offset:
-        raise MibError(table_offset, f"key table count {count} exceeds the bytes left")
+        raise CalderError(table_offset, f"key table count {count} exceeds the bytes left")
     names = [reader.read_text("key table name") for _ in range(count)]
     if reader.offset != len(data):
-        raise MibError(reader.offset, "bytes left over after the key table")
+        raise CalderError(reader.offset, "bytes left over after the key table")
     return names
 
 
 def decode_value(reader, names, depth):
     if depth > MAX_DEPTH:
-        raise MibError(reader.offset, f"nesting deeper than {MAX_DEPTH}")
+        raise CalderError(reader.offset, f"nesting deeper than {MAX_DEPTH}")
     tag_offset = reader.offset
     tag = reader.read_u8("tag")
     if tag == TAG_NULL:
@@ -166,7 +166,7 @@ def decode_value(reader, names, depth):
         return decode_fixed_width_packed(reader, tag)
     if tag == TAG_PACKED_STRUCT_ARRAY:
         return decode_packed_struct_array(reader, names)
-    raise MibError(tag_offset, f"unknown tag {tag}")
+    raise CalderError(tag_offset, f"unknown tag {tag}")
 
 
 def open_sized_container(reader, what):
@@ -178,13 +178,13 @@ def open_sized_container(reader, what):
 def read_counted_elements(payload, what):
     count = payload.read_u32(f"{what} count")
     if count > payload.limit - payload.offset:
-        raise MibError(payload.offset - 4, f"{what} count {count} exceeds its payload")
+        raise CalderError(payload.offset - 4, f"{what} count {count} exceeds its payload")
     return count
 
 
 def finish_container(reader, payload, what):
     if payload.offset != payload.limit:
-        raise MibError(payload.offset, f"{what} elements do not fill its payload")
+        raise CalderError(payload.offset, f"{what} elements do not fill its payload")
     reader.offset = payload.limit
 
 
@@ -197,7 +197,7 @@ def decode_object(reader, names, depth, tag):
             id_offset = payload.offset
             key_id = payload.read_varint("key id")
             if key_id >= len(names):
-                raise MibError(id_offset, f"key id {key_id} not in key table of {len(names)}")
+                raise CalderError(id_offset, f"key id {key_id} not in key table of {len(names)}")
             key = names[key_id]
         else:
             key = payload.read_text("map key")
@@ -233,29 +233,29 @@ def read_packed_struct_field(payload, names):
     path_offset = payload.offset
     path_length = payload.read_varint("packed struct field path length")
     if path_length == 0 or path_length > payload.limit - payload.offset:
-        raise MibError(path_offset, f"packed struct field path length {path_length} is invalid")
+        raise CalderError(path_offset, f"packed struct field path length {path_length} is invalid")
     path = []
     for _ in range(path_length):
         id_offset = payload.offset
         key_id = payload.read_varint("packed struct field key id")
         if key_id >= len(names):
-            raise MibError(id_offset, f"key id {key_id} not in key table of {len(names)}")
+            raise CalderError(id_offset, f"key id {key_id} not in key table of {len(names)}")
         path.append(names[key_id])
     type_offset = payload.offset
     field_type = payload.read_u8("packed struct field type")
     if field_type not in PACKED_FIELD_FORMATS:
-        raise MibError(type_offset, f"unknown packed struct field type {field_type}")
+        raise CalderError(type_offset, f"unknown packed struct field type {field_type}")
     return tuple(path), PACKED_FIELD_FORMATS[field_type]
 
 
 def check_packed_struct_paths(paths, offset):
     leaves = set(paths)
     if len(leaves) != len(paths):
-        raise MibError(offset, "packed struct layout names a field twice")
+        raise CalderError(offset, "packed struct layout names a field twice")
     for path in paths:
         for prefix_length in range(1, len(path)):
             if path[:prefix_length] in leaves:
-                raise MibError(offset, f"packed struct field {'.'.join(path)} is inside a number")
+                raise CalderError(offset, f"packed struct field {'.'.join(path)} is inside a number")
 
 
 def store_at_path(record, path, value):
@@ -270,13 +270,13 @@ def decode_packed_struct_array(reader, names):
     layout_offset = payload.offset
     field_count = payload.read_varint("packed struct field count")
     if field_count == 0 or field_count > payload.limit - payload.offset:
-        raise MibError(layout_offset, f"packed struct field count {field_count} is invalid")
+        raise CalderError(layout_offset, f"packed struct field count {field_count} is invalid")
     fields = [read_packed_struct_field(payload, names) for _ in range(field_count)]
     check_packed_struct_paths([path for path, _ in fields], layout_offset)
     record_format = "<" + "".join(element_format for _, (element_format, _) in fields)
     record_size = sum(width for _, (_, width) in fields)
     if count * record_size != payload.limit - payload.offset:
-        raise MibError(payload.offset, "PackedStructArray records do not fill its payload")
+        raise CalderError(payload.offset, "PackedStructArray records do not fill its payload")
     records = []
     for values in struct.iter_unpack(record_format, payload.read_bytes(count * record_size, "records")):
         record = {}
@@ -306,16 +306,16 @@ class JournalReport:
 def read_journal(data):
     data = bytes(data)
     if len(data) < JOURNAL_HEADER_SIZE or data[:4] != JOURNAL_MAGIC:
-        raise MibError(0, "journal does not start with MIBJ and an 8-byte header")
+        raise CalderError(0, "journal does not start with CLDJ and an 8-byte header")
     base_size = struct.unpack_from("<I", data, 4)[0]
     if base_size > len(data) - JOURNAL_HEADER_SIZE:
-        raise MibError(4, f"base size {base_size} runs past the end of the journal")
+        raise CalderError(4, f"base size {base_size} runs past the end of the journal")
     base = data[JOURNAL_HEADER_SIZE : JOURNAL_HEADER_SIZE + base_size]
     report = JournalReport(tree={})
     base_names = read_base_key_names(base)
     try:
         report.tree = decode_document(base)
-    except MibError as error:
+    except CalderError as error:
         report.base_problem = f"base document does not decode ({error}); replayed onto {{}}"
     if not isinstance(report.tree, dict):
         report.base_problem = "base root is not an object; frames not applied"
@@ -327,7 +327,7 @@ def read_journal(data):
 def read_base_key_names(base):
     try:
         names, _ = read_document_key_names(base)
-    except MibError:
+    except CalderError:
         return None
     return names
 
@@ -355,7 +355,7 @@ def decode_frame_value(frame_value, base_names):
     reader = Reader(frame_value, 0, len(frame_value))
     value = decode_value(reader, base_names, 0)
     if reader.offset != len(frame_value):
-        raise MibError(reader.offset, "frame value ends before its payload does")
+        raise CalderError(reader.offset, "frame value ends before its payload does")
     return value
 
 
@@ -371,7 +371,7 @@ def apply_frame(frame_bytes, base_names, tree):
     reader = Reader(payload, 0, len(payload))
     try:
         key = reader.read_text("frame key")
-    except MibError as error:
+    except CalderError as error:
         return str(error)
     if kind == FRAME_KIND_REMOVE:
         tree.pop(key, None)
@@ -380,7 +380,7 @@ def apply_frame(frame_bytes, base_names, tree):
         return "base key table is unreadable, so a set frame cannot be decoded"
     try:
         tree[key] = decode_frame_value(payload[reader.offset :], base_names)
-    except MibError as error:
+    except CalderError as error:
         return f"frame value does not decode ({error})"
     return None
 

@@ -685,7 +685,7 @@ auto journalGarbage = test("Journal: garbage input is rejected calmly") = []
 {
     check(!Calder::inspectJournal({}).valid);
 
-    auto junk = Calder::Buffer {'M', 'I', 'B', 'J', 0xFF, 0xFF, 0xFF, 0xFF};
+    auto junk = Calder::Buffer {'C', 'L', 'D', 'J', 0xFF, 0xFF, 0xFF, 0xFF};
     check(!Calder::inspectJournal(junk).valid);
     check(createFromBinary<ProfileMap>(junk).empty());
 };

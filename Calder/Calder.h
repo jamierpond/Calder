@@ -1,6 +1,6 @@
 #pragma once
 
-// Entry header: the binary serialization layer — the compact "MIB1"
+// Entry header: the binary serialization layer — the compact "CLD1"
 // wire format (Detail::ByteWriter / Document / View) plus the
 // reflection serializers toBinary / fromBinary / createFromBinary.
 
