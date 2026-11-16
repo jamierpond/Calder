@@ -55,13 +55,17 @@ def find_array_difference(path, cpp, python):
     return None
 
 
+def has_replayed_cleanly(report):
+    return not report.skipped_frames and report.truncated_at is None and not report.base_problem
+
+
 def decode_with_python(file):
     decoded = decode(file.read_bytes())
-    if isinstance(decoded, JournalReport):
-        if decoded.skipped_frames or decoded.truncated_at is not None or decoded.base_problem:
-            raise ValueError(f"{file.name}: the journal did not replay cleanly: {decoded}")
-        return decoded.tree
-    return decoded
+    if not isinstance(decoded, JournalReport):
+        return decoded
+    if not has_replayed_cleanly(decoded):
+        raise ValueError(f"{file.name}: the journal did not replay cleanly: {decoded}")
+    return decoded.tree
 
 
 def main():
