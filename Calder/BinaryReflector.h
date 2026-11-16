@@ -9,7 +9,7 @@
 #include <variant>
 #include <vector>
 
-namespace emberstore
+namespace Calder
 {
 
 using Miro::CustomOptions;
@@ -23,7 +23,7 @@ using Miro::Shape;
 using Miro::ValueKind;
 using Miro::Vector;
 
-// Streams a reflection walk straight into a Binary::Writer. Container
+// Streams a reflection walk straight into a Calder::Writer. Container
 // slots write their tag and a placeholder size when they start and patch
 // it when they finish, which happens before the next sibling starts.
 // Each reflector keeps one child and restarts it for every field or
@@ -31,7 +31,7 @@ using Miro::Vector;
 class BinaryWriterReflector final : public Reflector
 {
 public:
-    BinaryWriterReflector(Binary::Writer& writerToUse, Options optsToUse);
+    BinaryWriterReflector(Calder::Writer& writerToUse, Options optsToUse);
     ~BinaryWriterReflector() override;
 
     void visit(PrimitiveRef ref) override;
@@ -44,7 +44,7 @@ public:
 
     void resizeArray(std::size_t newSize) override;
 
-    void markPresent() override { slot.omittableSlotStartOffset = Binary::npos; }
+    void markPresent() override { slot.omittableSlotStartOffset = Calder::npos; }
 
     void requirePolymorphicSupport(std::string_view) override {}
 
@@ -53,15 +53,15 @@ private:
     {
         bool isOpen = false;
         std::size_t slotStartOffset = 0;
-        std::size_t sizeFieldOffset = Binary::npos;
-        std::size_t countFieldOffset = Binary::npos;
+        std::size_t sizeFieldOffset = Calder::npos;
+        std::size_t countFieldOffset = Calder::npos;
         std::size_t elementCount = 0;
         bool isSlotReplacedByPackedOrNull = false;
 
         // Where an Omittable slot's bytes (its object key included) begin,
         // until markPresent() claims it. Unclaimed, finishing rewinds to
         // here; an array element leaves a Null so the count stays right.
-        std::size_t omittableSlotStartOffset = Binary::npos;
+        std::size_t omittableSlotStartOffset = Calder::npos;
         bool isOmittableSlotAnArrayElement = false;
     };
 
@@ -72,12 +72,12 @@ private:
     Reflector& spawnChild(std::size_t childStartOffset,
                           Options&& childOpts,
                           bool isArrayElement);
-    void writeSizedHeader(Binary::Tag tag);
+    void writeSizedHeader(Calder::Tag tag);
     void writeArrayHeader();
     void patchSizes();
     void discardPendingSlot();
 
-    Binary::Writer& writer;
+    Calder::Writer& writer;
     SlotState slot;
 
     OwningPointer<BinaryWriterReflector> reusableChild;
@@ -116,8 +116,8 @@ struct BinaryLoadReport
 class BinaryReaderReflector final : public Reflector
 {
 public:
-    BinaryReaderReflector(const Binary::Document& documentToUse,
-                          const Binary::Detail::ValueHeader& headerToUse,
+    BinaryReaderReflector(const Calder::Document& documentToUse,
+                          const Calder::Detail::ValueHeader& headerToUse,
                           Options optsToUse,
                           BinaryLoadReport& reportToUse);
 
@@ -143,15 +143,15 @@ private:
 
     BinaryReaderReflector(const BinaryReaderReflector& parentToUse,
                           StepFromParent stepToUse,
-                          const Binary::Detail::ValueHeader& headerToUse,
+                          const Calder::Detail::ValueHeader& headerToUse,
                           Options optsToUse);
 
     void restartSlot(StepFromParent stepToUse,
-                     const Binary::Detail::ValueHeader& headerToUse,
+                     const Calder::Detail::ValueHeader& headerToUse,
                      Options&& optsToUse);
 
     Reflector& spawnChild(StepFromParent step,
-                          const Binary::Detail::ValueHeader& childHeader,
+                          const Calder::Detail::ValueHeader& childHeader,
                           Options&& childOpts);
     Reflector& spawnMissingChild(StepFromParent step, Options&& childOpts);
     Reflector& spawnElementChild(std::size_t index,
@@ -162,12 +162,12 @@ private:
     void reportTypeMismatch(ValueKind expectedKind) const;
     std::string buildFieldPath() const;
 
-    bool hasCategory(Binary::Detail::ValueCategory category) const;
-    std::optional<Binary::Detail::ObjectEntry> findEntry(std::string_view key);
+    bool hasCategory(Calder::Detail::ValueCategory category) const;
+    std::optional<Calder::Detail::ObjectEntry> findEntry(std::string_view key);
     void rewindResumeOffsetIfPast(std::size_t index);
 
-    const Binary::Document& document;
-    Binary::Detail::ValueHeader header;
+    const Calder::Document& document;
+    Calder::Detail::ValueHeader header;
     BinaryLoadReport& report;
     std::optional<std::reference_wrapper<const BinaryReaderReflector>> parent;
     StepFromParent stepFromParent;
@@ -179,4 +179,4 @@ private:
     OwningPointer<BinaryReaderReflector> reusableChild;
 };
 
-} // namespace emberstore
+} // namespace Calder

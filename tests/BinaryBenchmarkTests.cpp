@@ -6,7 +6,7 @@
 
 #include "TestTypes.h"
 
-#include <emberstore/Binary.h>
+#include <Calder/Calder.h>
 
 #include <NanoTest/NanoTest.h>
 
@@ -17,7 +17,7 @@
 
 using namespace nano;
 using namespace Miro;
-using namespace emberstore;
+using namespace Calder;
 
 namespace
 {
@@ -153,7 +153,7 @@ auto binaryRandomAccess = test("Benchmark: View random access vs full decode") =
     auto json = toJSONString(library);
 
     // Point lookup via View: touch only the bytes on the path.
-    auto doc = Binary::Document {std::span<const std::uint8_t> {binary}};
+    auto doc = Calder::Document {std::span<const std::uint8_t> {binary}};
     check(doc.isValid());
 
     auto viewMs = measureBestMilliseconds(

@@ -1,8 +1,8 @@
-// Self-containment check: <emberstore/Binary.h> must compile as the first
+// Self-containment check: <Calder/Calder.h> must compile as the first
 // and only Miro include, and must supply the binary wire layer
 // (Writer / Document / View) plus toBinary / fromBinary.
 
-#include <emberstore/Binary.h>
+#include <Calder/Calder.h>
 
 #include <NanoTest/NanoTest.h>
 
@@ -24,13 +24,12 @@ struct BinaryPoint
 } // namespace
 
 auto binaryEntryHeader =
-    test("ObjectEntry header: emberstore/Binary.h is self-contained") = []
+    test("ObjectEntry header: Calder/Calder.h is self-contained") = []
 {
     auto point = BinaryPoint {};
     point.x = 3;
 
-    auto copy =
-        emberstore::createFromBinary<BinaryPoint>(emberstore::toBinary(point));
+    auto copy = Calder::createFromBinary<BinaryPoint>(Calder::toBinary(point));
     check(copy.x == 3);
     check(copy.y == 0);
 };

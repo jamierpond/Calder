@@ -20,8 +20,8 @@ if (NOT TARGET Miro)
 endif ()
 
 add_library(calder STATIC
-        emberstore/Binary/Binary.cpp
-        emberstore/Binary/BinaryReflector.cpp)
+        Calder/Binary.cpp
+        Calder/BinaryReflector.cpp)
 
 target_include_directories(calder PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(calder PUBLIC cxx_std_20)

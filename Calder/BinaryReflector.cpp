@@ -6,14 +6,14 @@
 #include <cstring>
 #include <utility>
 
-namespace emberstore
+namespace Calder
 {
 
-using Binary::Tag;
-using Binary::Detail::ByteReader;
-using Binary::Detail::Encoding;
-using Binary::Detail::ValueCategory;
-using Binary::Detail::ValueHeader;
+using Calder::Tag;
+using Calder::Detail::ByteReader;
+using Calder::Detail::Encoding;
+using Calder::Detail::ValueCategory;
+using Calder::Detail::ValueHeader;
 
 namespace
 {
@@ -29,7 +29,7 @@ bool areAllExactlyRepresentableAsFloat(std::span<double> values)
     return std::ranges::all_of(values, isExactlyRepresentableAsFloat);
 }
 
-void patchPayloadSize(Binary::Writer& writer, std::size_t sizeFieldOffset)
+void patchPayloadSize(Calder::Writer& writer, std::size_t sizeFieldOffset)
 {
     auto payloadSize =
         writer.getNextWriteOffset() - (sizeFieldOffset + sizeof(std::uint32_t));
@@ -37,7 +37,7 @@ void patchPayloadSize(Binary::Writer& writer, std::size_t sizeFieldOffset)
 }
 
 template <typename Element>
-void writePackedFixedWidth(Binary::Writer& writer,
+void writePackedFixedWidth(Calder::Writer& writer,
                            Tag tag,
                            std::span<Element> values)
 {
@@ -58,7 +58,7 @@ std::int64_t getWireInteger(Integer value)
 }
 
 template <typename Integer>
-void writePackedIntegers(Binary::Writer& writer, Tag tag, std::span<Integer> values)
+void writePackedIntegers(Calder::Writer& writer, Tag tag, std::span<Integer> values)
 {
     writer.writeTag(tag);
     auto sizeFieldOffset = writer.getNextWriteOffset();
@@ -71,12 +71,12 @@ void writePackedIntegers(Binary::Writer& writer, Tag tag, std::span<Integer> val
     patchPayloadSize(writer, sizeFieldOffset);
 }
 
-void writePacked(Binary::Writer& writer, std::span<float> values)
+void writePacked(Calder::Writer& writer, std::span<float> values)
 {
     writePackedFixedWidth(writer, Tag::PackedFloat, values);
 }
 
-void writePacked(Binary::Writer& writer, std::span<double> values)
+void writePacked(Calder::Writer& writer, std::span<double> values)
 {
     if (!areAllExactlyRepresentableAsFloat(values))
     {
@@ -88,47 +88,47 @@ void writePacked(Binary::Writer& writer, std::span<double> values)
     writePacked(writer, std::span<float> {narrowed});
 }
 
-void writePacked(Binary::Writer& writer, std::span<std::int32_t> values)
+void writePacked(Calder::Writer& writer, std::span<std::int32_t> values)
 {
     writePackedIntegers(writer, Tag::PackedInt32, values);
 }
 
-void writePacked(Binary::Writer& writer, std::span<std::int64_t> values)
+void writePacked(Calder::Writer& writer, std::span<std::int64_t> values)
 {
     writePackedIntegers(writer, Tag::PackedInt64, values);
 }
 
-void writePacked(Binary::Writer& writer, std::span<std::uint32_t> values)
+void writePacked(Calder::Writer& writer, std::span<std::uint32_t> values)
 {
     writePackedIntegers(writer, Tag::PackedInt64, values);
 }
 
-void writePacked(Binary::Writer& writer, std::span<std::uint64_t> values)
+void writePacked(Calder::Writer& writer, std::span<std::uint64_t> values)
 {
     writePackedIntegers(writer, Tag::PackedInt64, values);
 }
 
-void writePacked(Binary::Writer& writer, std::span<std::int8_t> values)
+void writePacked(Calder::Writer& writer, std::span<std::int8_t> values)
 {
     writePackedFixedWidth(writer, Tag::PackedInt8, values);
 }
 
-void writePacked(Binary::Writer& writer, std::span<std::uint8_t> values)
+void writePacked(Calder::Writer& writer, std::span<std::uint8_t> values)
 {
     writePackedFixedWidth(writer, Tag::PackedUInt8, values);
 }
 
-void writePacked(Binary::Writer& writer, std::span<std::int16_t> values)
+void writePacked(Calder::Writer& writer, std::span<std::int16_t> values)
 {
     writePackedFixedWidth(writer, Tag::PackedInt16, values);
 }
 
-void writePacked(Binary::Writer& writer, std::span<std::uint16_t> values)
+void writePacked(Calder::Writer& writer, std::span<std::uint16_t> values)
 {
     writePackedFixedWidth(writer, Tag::PackedUInt16, values);
 }
 
-void writeDouble(Binary::Writer& writer, double value)
+void writeDouble(Calder::Writer& writer, double value)
 {
     if (!isExactlyRepresentableAsFloat(value))
     {
@@ -142,30 +142,30 @@ void writeDouble(Binary::Writer& writer, double value)
     writer.writeFixedWidth(narrow);
 }
 
-void writePrimitive(Binary::Writer& writer, bool value)
+void writePrimitive(Calder::Writer& writer, bool value)
 {
     writer.writeTag(value ? Tag::True : Tag::False);
 }
 
-void writePrimitive(Binary::Writer& writer, const std::string& value)
+void writePrimitive(Calder::Writer& writer, const std::string& value)
 {
     writer.writeTag(Tag::String);
     writer.writeString(value);
 }
 
-void writePrimitive(Binary::Writer& writer, double value)
+void writePrimitive(Calder::Writer& writer, double value)
 {
     writeDouble(writer, value);
 }
 
 template <std::integral Integer>
-void writePrimitive(Binary::Writer& writer, Integer value)
+void writePrimitive(Calder::Writer& writer, Integer value)
 {
     writer.writeTag(Tag::Int);
     writer.writeZigzag(static_cast<std::int64_t>(value));
 }
 
-void readPrimitive(const Binary::Document&, const ValueHeader& header, bool& out)
+void readPrimitive(const Calder::Document&, const ValueHeader& header, bool& out)
 {
     if (header.tag == Tag::True)
         out = true;
@@ -173,7 +173,7 @@ void readPrimitive(const Binary::Document&, const ValueHeader& header, bool& out
         out = false;
 }
 
-void readPrimitive(const Binary::Document& document,
+void readPrimitive(const Calder::Document& document,
                    const ValueHeader& header,
                    std::string& out)
 {
@@ -185,19 +185,19 @@ void readPrimitive(const Binary::Document& document,
 }
 
 template <typename Out>
-void convertDecodedNumber(const Binary::Detail::Number& number, Out& out)
+void convertDecodedNumber(const Calder::Detail::Number& number, Out& out)
 {
     std::visit([&out](auto value) { Miro::Detail::convertNumber(value, out); },
                number);
 }
 
 template <typename Out>
-void readPrimitive(const Binary::Document& document,
+void readPrimitive(const Calder::Document& document,
                    const ValueHeader& header,
                    Out& out)
 {
     auto reader = ByteReader {document.bytes(), header.payloadOffset};
-    auto number = Binary::Detail::readNumber(reader, header.encoding);
+    auto number = Calder::Detail::readNumber(reader, header.encoding);
 
     if (reader.hasReadEverythingInBounds)
         convertDecodedNumber(number, out);
@@ -251,7 +251,7 @@ bool canCopyRawBytes(Encoding encoding)
 }
 
 template <typename T>
-void convertPackedElement(const Binary::Detail::Number& number, T& element)
+void convertPackedElement(const Calder::Detail::Number& number, T& element)
 {
     if constexpr (std::same_as<T, std::uint64_t>)
     {
@@ -273,13 +273,13 @@ void readPackedElements(ByteReader& reader, Encoding encoding, std::span<T> dest
         auto bytes = reader.readBytes(dest.size_bytes());
 
         if (reader.hasReadEverythingInBounds)
-            Binary::Detail::decodeLittleEndianElements(bytes, dest);
+            Calder::Detail::decodeLittleEndianElements(bytes, dest);
 
         return;
     }
 
     for (auto& element: dest)
-        convertPackedElement(Binary::Detail::readNumber(reader, encoding), element);
+        convertPackedElement(Calder::Detail::readNumber(reader, encoding), element);
 }
 
 ValueKind getValueKind(ValueCategory category)
@@ -305,7 +305,7 @@ ValueKind getValueKind(ValueCategory category)
 
 } // namespace
 
-BinaryWriterReflector::BinaryWriterReflector(Binary::Writer& writerToUse,
+BinaryWriterReflector::BinaryWriterReflector(Calder::Writer& writerToUse,
                                              Options optsToUse)
     : Reflector(std::move(optsToUse))
     , writer(writerToUse)
@@ -344,7 +344,7 @@ void BinaryWriterReflector::finishSlot()
     slot.isOpen = false;
     finishOpenChild();
 
-    if (slot.omittableSlotStartOffset != Binary::npos)
+    if (slot.omittableSlotStartOffset != Calder::npos)
         discardPendingSlot();
     else if (!slot.isSlotReplacedByPackedOrNull)
         patchSizes();
@@ -366,11 +366,11 @@ void BinaryWriterReflector::discardPendingSlot()
 
 void BinaryWriterReflector::patchSizes()
 {
-    if (slot.countFieldOffset != Binary::npos)
+    if (slot.countFieldOffset != Calder::npos)
         writer.patchU32(slot.countFieldOffset,
                         static_cast<std::uint32_t>(slot.elementCount));
 
-    if (slot.sizeFieldOffset != Binary::npos)
+    if (slot.sizeFieldOffset != Calder::npos)
         patchPayloadSize(writer, slot.sizeFieldOffset);
 }
 
@@ -393,7 +393,7 @@ void BinaryWriterReflector::visit(PrimitiveRef ref)
     if (opts.shape == Shape::Raw)
     {
         writer.truncateTo(slot.slotStartOffset);
-        slot.sizeFieldOffset = Binary::npos;
+        slot.sizeFieldOffset = Calder::npos;
     }
 
     std::visit([this](auto* value) { writePrimitive(writer, *value); }, ref.data);
@@ -462,7 +462,7 @@ Reflector& BinaryWriterReflector::atIndex(std::size_t index, Options childOpts)
 
 void BinaryWriterReflector::resizeArray(std::size_t newSize)
 {
-    if (opts.shape == Shape::Raw && slot.countFieldOffset == Binary::npos)
+    if (opts.shape == Shape::Raw && slot.countFieldOffset == Calder::npos)
     {
         writer.truncateTo(slot.slotStartOffset);
         writeArrayHeader();
@@ -471,7 +471,7 @@ void BinaryWriterReflector::resizeArray(std::size_t newSize)
     slot.elementCount = std::max(slot.elementCount, newSize);
 }
 
-BinaryReaderReflector::BinaryReaderReflector(const Binary::Document& documentToUse,
+BinaryReaderReflector::BinaryReaderReflector(const Calder::Document& documentToUse,
                                              const ValueHeader& headerToUse,
                                              Options optsToUse,
                                              BinaryLoadReport& reportToUse)
@@ -550,7 +550,7 @@ ValueKind BinaryReaderReflector::kind() const
 bool BinaryReaderReflector::isIntegerNumber() const
 {
     return hasCategory(ValueCategory::Number)
-           && Binary::Detail::isIntegerEncoding(header.encoding);
+           && Calder::Detail::isIntegerEncoding(header.encoding);
 }
 
 void BinaryReaderReflector::visit(PrimitiveRef ref)
@@ -609,7 +609,7 @@ Vector<std::string> BinaryReaderReflector::mapKeys() const
     if (!hasCategory(ValueCategory::Object))
         return keys;
 
-    auto cursor = Binary::Detail::ObjectEntryCursor {
+    auto cursor = Calder::Detail::ObjectEntryCursor {
         document, header, header.payloadOffset, header.payloadEndOffset};
 
     while (auto entry = cursor.readNextEntry())
@@ -618,20 +618,20 @@ Vector<std::string> BinaryReaderReflector::mapKeys() const
     return keys;
 }
 
-std::optional<Binary::Detail::ObjectEntry>
+std::optional<Calder::Detail::ObjectEntry>
     BinaryReaderReflector::findEntry(std::string_view key)
 {
     // Fields usually arrive in written order: resume from the cursor,
     // then wrap around once for reordered or missing keys.
     auto resumeOffsetBeforeSearch = resumeOffset;
     auto entry =
-        Binary::Detail::ObjectEntryCursor {
+        Calder::Detail::ObjectEntryCursor {
             document, header, resumeOffsetBeforeSearch, header.payloadEndOffset}
             .findEntryWithKey(key);
 
     if (!entry)
         entry =
-            Binary::Detail::ObjectEntryCursor {
+            Calder::Detail::ObjectEntryCursor {
                 document, header, header.payloadOffset, resumeOffsetBeforeSearch}
                 .findEntryWithKey(key);
 
@@ -667,12 +667,12 @@ Reflector& BinaryReaderReflector::spawnElementChild(std::size_t index,
     if (header.encoding == Encoding::Tagged)
         return spawnChild(
             index,
-            Binary::Detail::parseValueHeader(document.bytes(), elementOffset),
+            Calder::Detail::parseValueHeader(document.bytes(), elementOffset),
             std::move(childOpts));
 
     return spawnChild(
         index,
-        Binary::Detail::makePackedElementHeader(header.encoding, elementOffset),
+        Calder::Detail::makePackedElementHeader(header.encoding, elementOffset),
         std::move(childOpts));
 }
 
@@ -691,7 +691,7 @@ Reflector& BinaryReaderReflector::atKey(std::string_view key, Options childOpts)
 
     return spawnChild(
         key,
-        Binary::Detail::parseValueHeader(document.bytes(), entry->valueOffset),
+        Calder::Detail::parseValueHeader(document.bytes(), entry->valueOffset),
         std::move(childOpts));
 }
 
@@ -712,7 +712,7 @@ Reflector& BinaryReaderReflector::atIndex(std::size_t index, Options childOpts)
     rewindResumeOffsetIfPast(index);
 
     auto reader = ByteReader {document.bytes(), resumeOffset};
-    auto skipped = Binary::Detail::skipElements(
+    auto skipped = Calder::Detail::skipElements(
         reader, header.encoding, index - resumeElementIndex);
 
     if (!skipped || reader.readOffsetInBytes >= header.payloadEndOffset)
@@ -722,7 +722,7 @@ Reflector& BinaryReaderReflector::atIndex(std::size_t index, Options childOpts)
     resumeOffset = elementOffset;
     resumeElementIndex = index;
 
-    if (Binary::Detail::skipElements(reader, header.encoding, 1))
+    if (Calder::Detail::skipElements(reader, header.encoding, 1))
     {
         resumeOffset = reader.readOffsetInBytes;
         resumeElementIndex = index + 1;
@@ -731,4 +731,4 @@ Reflector& BinaryReaderReflector::atIndex(std::size_t index, Options childOpts)
     return spawnElementChild(index, elementOffset, std::move(childOpts));
 }
 
-} // namespace emberstore
+} // namespace Calder

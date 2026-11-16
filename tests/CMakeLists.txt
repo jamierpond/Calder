@@ -6,9 +6,9 @@ if (NOT TARGET NanoTest)
 endif ()
 
 add_executable(CalderTests
-        Binary/BinaryReflectorTests.cpp Binary/BinaryFormatTests.cpp
-        Binary/BinaryBenchmarkTests.cpp Binary/SchemaEvolutionTests.cpp
-        Binary/BinaryHeaderTests.cpp)
+        BinaryReflectorTests.cpp BinaryFormatTests.cpp
+        BinaryBenchmarkTests.cpp SchemaEvolutionTests.cpp
+        BinaryHeaderTests.cpp)
 target_link_libraries(CalderTests PRIVATE
         NanoTest NanoTestMain calder)
 target_compile_options(CalderTests PRIVATE ${CALDER_WARNINGS})

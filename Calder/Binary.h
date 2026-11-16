@@ -54,7 +54,7 @@
 // skip a corrupt frame whose length still fits, and stop at a torn one
 // that runs past the end of the file.
 
-namespace emberstore::Binary
+namespace Calder
 {
 
 using Buffer = std::vector<std::uint8_t>;
@@ -72,7 +72,7 @@ inline std::uint32_t convertToStoredSize(std::size_t sizeInBytes)
     if (sizeInBytes > largestStoredSize)
     {
         throw std::length_error(
-            "emberstore: a binary document can be at most 4 GiB because its "
+            "Calder: a binary document can be at most 4 GiB because its "
             "sizes are 32-bit; this one is "
             + std::to_string(sizeInBytes)
             + " bytes. Split the data into several documents.");
@@ -586,4 +586,4 @@ private:
     Detail::ValueHeader header {};
 };
 
-} // namespace emberstore::Binary
+} // namespace Calder

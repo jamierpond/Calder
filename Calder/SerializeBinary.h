@@ -15,7 +15,7 @@
 // keys and mismatched types keep prior values. fromBinary also reads
 // journals ("MIBJ"), replaying their frames into std::map<std::string, V>.
 
-namespace emberstore
+namespace Calder
 {
 namespace Detail
 {
@@ -33,13 +33,13 @@ struct IsReplayableJournalMap<std::map<std::string, V>> : std::true_type
 
 template <typename T>
 void loadValidDocument(T& value,
-                       const Binary::Document& document,
+                       const Calder::Document& document,
                        const CustomOptions& custom,
                        BinaryLoadReport& report)
 {
     auto ref = BinaryReaderReflector {
         document,
-        Binary::Detail::parseValueHeader(document.bytes(),
+        Calder::Detail::parseValueHeader(document.bytes(),
                                          document.getRootValueOffset()),
         Miro::Detail::topLevelOptions<T>(Mode::Load, /*schema=*/false, custom),
         report};
@@ -48,7 +48,7 @@ void loadValidDocument(T& value,
 
 template <typename T>
 void loadBinaryDocument(T& value,
-                        const Binary::Document& document,
+                        const Calder::Document& document,
                         const CustomOptions& custom,
                         BinaryLoadReport& report)
 {
@@ -58,20 +58,20 @@ void loadBinaryDocument(T& value,
 
 template <typename Map>
 void replayJournalFrame(Map& value,
-                        const Binary::JournalFrame& frame,
-                        const Binary::Document& baseDocument,
+                        const Calder::JournalFrame& frame,
+                        const Calder::Document& baseDocument,
                         const CustomOptions& custom,
                         BinaryLoadReport& report)
 {
     auto key = std::string {frame.key};
 
-    if (frame.kind == Binary::FrameKind::Remove)
+    if (frame.kind == Calder::FrameKind::Remove)
     {
         value.erase(key);
         return;
     }
 
-    auto frameDocument = Binary::Document {frame.value, baseDocument};
+    auto frameDocument = Calder::Document {frame.value, baseDocument};
 
     if (!frameDocument.isValid())
     {
@@ -91,7 +91,7 @@ void loadBinaryJournal(T& value,
                        const CustomOptions& custom,
                        BinaryLoadReport& report)
 {
-    const auto journalInfo = Binary::inspectJournal(data);
+    const auto journalInfo = Calder::inspectJournal(data);
 
     if (!journalInfo.valid)
         return;
@@ -99,12 +99,12 @@ void loadBinaryJournal(T& value,
     report.skippedJournalFrameCount = journalInfo.skippedFrameCount;
     report.isJournalTruncated = journalInfo.truncated;
     auto baseDocument =
-        Binary::Document {data.subspan(Binary::headerSize, journalInfo.baseSize)};
+        Calder::Document {data.subspan(Calder::headerSize, journalInfo.baseSize)};
     loadBinaryDocument(value, baseDocument, custom, report);
 
     if constexpr (IsReplayableJournalMap<T>::value)
     {
-        for (const auto& frame: Binary::readJournalFrames(data))
+        for (const auto& frame: Calder::readJournalFrames(data))
             replayJournalFrame(value, frame, baseDocument, custom, report);
     }
 }
@@ -115,7 +115,7 @@ namespace Detail
 {
 
 template <typename T>
-void writeReflectedValue(Binary::Writer& writer,
+void writeReflectedValue(Calder::Writer& writer,
                          const T& value,
                          CustomOptions custom)
 {
@@ -129,9 +129,9 @@ void writeReflectedValue(Binary::Writer& writer,
 } // namespace Detail
 
 template <typename T>
-Binary::Buffer toBinary(const T& value, CustomOptions custom = {})
+Calder::Buffer toBinary(const T& value, CustomOptions custom = {})
 {
-    auto writer = Binary::Writer {};
+    auto writer = Calder::Writer {};
     Detail::writeReflectedValue(writer, value, std::move(custom));
     return writer.finishWithKeyTable();
 }
@@ -147,11 +147,11 @@ BinaryLoadReport fromBinary(T& value,
 
     try
     {
-        if (Binary::isJournal(data))
+        if (Calder::isJournal(data))
             Detail::loadBinaryJournal(value, data, custom, report);
         else
             Detail::loadBinaryDocument(
-                value, Binary::Document {data}, custom, report);
+                value, Calder::Document {data}, custom, report);
     }
     catch (...)
     {
@@ -169,36 +169,36 @@ T createFromBinary(std::span<const std::uint8_t> data, CustomOptions custom = {}
 }
 
 // A base document with no frames yet; append binaryJournalSet /
-// binaryJournalRemove frames to it. Binary::readJournalKeyTable gives the
+// binaryJournalRemove frames to it. Calder::readJournalKeyTable gives the
 // key table binaryJournalSet needs.
 template <typename T>
-Binary::Buffer toBinaryJournal(const T& value, CustomOptions custom = {})
+Calder::Buffer toBinaryJournal(const T& value, CustomOptions custom = {})
 {
-    return Binary::makeJournal(toBinary(value, std::move(custom)));
+    return Calder::makeJournal(toBinary(value, std::move(custom)));
 }
 
 // nullopt if `value` uses a field name the journal's key table lacks: the
 // journal then needs a new base that has it (toBinaryJournal of the whole map).
 template <typename V>
-std::optional<Binary::Buffer>
+std::optional<Calder::Buffer>
     binaryJournalSet(std::string_view key,
                      const V& value,
-                     Binary::InternedKeyTable& journalKeyTable,
+                     Calder::InternedKeyTable& journalKeyTable,
                      CustomOptions custom = {})
 {
-    auto writer = Binary::Writer {journalKeyTable};
+    auto writer = Calder::Writer {journalKeyTable};
     Detail::writeReflectedValue(writer, value, std::move(custom));
     auto frameValue = writer.finishJournalFrameValue();
 
     if (!frameValue)
         return std::nullopt;
 
-    return Binary::makeFrame(Binary::FrameKind::Set, key, *frameValue);
+    return Calder::makeFrame(Calder::FrameKind::Set, key, *frameValue);
 }
 
-inline Binary::Buffer binaryJournalRemove(std::string_view key)
+inline Calder::Buffer binaryJournalRemove(std::string_view key)
 {
-    return Binary::makeFrame(Binary::FrameKind::Remove, key, {});
+    return Calder::makeFrame(Calder::FrameKind::Remove, key, {});
 }
 
-} // namespace emberstore
+} // namespace Calder

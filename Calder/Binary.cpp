@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace emberstore::Binary
+namespace Calder
 {
 namespace
 {
@@ -700,4 +700,4 @@ std::string_view View::asString() const
     return reader.readString(reader.readVarint());
 }
 
-} // namespace emberstore::Binary
+} // namespace Calder

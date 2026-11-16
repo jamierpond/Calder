@@ -1,6 +1,6 @@
 #include "TestTypes.h"
 
-#include <emberstore/Binary.h>
+#include <Calder/Calder.h>
 
 #include <NanoTest/NanoTest.h>
 
@@ -10,7 +10,7 @@
 
 using namespace nano;
 using namespace Miro;
-using namespace emberstore;
+using namespace Calder;
 
 namespace
 {
@@ -443,7 +443,7 @@ auto binaryCorruptInput = test("Binary: corrupt input yields defaults") = []
     // Truncations at every length must not crash.
     for (std::size_t cut = 0; cut < good.size(); ++cut)
     {
-        auto truncated = Binary::Buffer(
+        auto truncated = Calder::Buffer(
             good.begin(), good.begin() + static_cast<std::ptrdiff_t>(cut));
         auto copy = createFromBinary<ClassWithInt>(truncated);
         ignoreUnused(copy);
@@ -458,7 +458,7 @@ auto binaryCorruptInput = test("Binary: corrupt input yields defaults") = []
         ignoreUnused(copy);
     }
 
-    check(createFromBinary<ClassWithInt>(Binary::Buffer {}).count == 42);
+    check(createFromBinary<ClassWithInt>(Calder::Buffer {}).count == 42);
 };
 
 auto binaryEmptyStruct = test("Binary: empty struct round trip") = []
@@ -476,7 +476,7 @@ auto binaryView = test("Binary: View jumps to nested values without decoding") =
     val.items = {{100}, {200}, {300}};
 
     auto buffer = toBinary(val);
-    auto doc = Binary::Document {std::span<const std::uint8_t> {buffer}};
+    auto doc = Calder::Document {std::span<const std::uint8_t> {buffer}};
     check(doc.isValid());
 
     auto root = doc.root();
@@ -494,7 +494,7 @@ auto binaryView = test("Binary: View jumps to nested values without decoding") =
     // lands on the same value.
     auto offset = items[1]["x"].getValueOffset();
     check(offset < buffer.size());
-    check(Binary::View {doc, offset}.asInt() == 200);
+    check(Calder::View {doc, offset}.asInt() == 200);
 };
 
 auto binaryViewPacked = test("Binary: View indexes packed arrays") = []
@@ -503,7 +503,7 @@ auto binaryViewPacked = test("Binary: View indexes packed arrays") = []
     val.vals = {0.5, 1.0 / 3.0, -2.25};
 
     auto buffer = toBinary(val);
-    auto doc = Binary::Document {std::span<const std::uint8_t> {buffer}};
+    auto doc = Calder::Document {std::span<const std::uint8_t> {buffer}};
 
     auto vals = doc.root()["vals"];
     check(vals.isArray());
@@ -519,7 +519,7 @@ auto binaryViewStrings = test("Binary: View reads strings and maps") = []
     val.data = {{"greeting", "hello"}, {"farewell", "bye"}};
 
     auto buffer = toBinary(val);
-    auto doc = Binary::Document {std::span<const std::uint8_t> {buffer}};
+    auto doc = Calder::Document {std::span<const std::uint8_t> {buffer}};
 
     auto data = doc.root()["data"];
     check(data.isMap());
@@ -536,10 +536,9 @@ namespace
 
 using ProfileMap = std::map<std::string, Inner>;
 
-emberstore::Binary::Buffer
-    concatenateBuffers(std::initializer_list<emberstore::Binary::Buffer> parts)
+Calder::Buffer concatenateBuffers(std::initializer_list<Calder::Buffer> parts)
 {
-    auto out = emberstore::Binary::Buffer {};
+    auto out = Calder::Buffer {};
 
     for (const auto& part: parts)
         out.insert(out.end(), part.begin(), part.end());
@@ -552,7 +551,7 @@ emberstore::Binary::Buffer
 auto journalRoundTrip = test("Journal: base plus frames replay in order") = []
 {
     auto base = toBinaryJournal(ProfileMap {{"a", {1}}, {"b", {2}}});
-    auto keyTable = Binary::readJournalKeyTable(base);
+    auto keyTable = Calder::readJournalKeyTable(base);
 
     auto bytes = concatenateBuffers({
         base,
@@ -568,10 +567,10 @@ auto journalRoundTrip = test("Journal: base plus frames replay in order") = []
     check(loaded["b"].x == 5);
     check(loaded["c"].x == 3);
 
-    auto info = Binary::inspectJournal(bytes);
+    auto info = Calder::inspectJournal(bytes);
     check(info.valid);
     check(!info.truncated);
-    check(Binary::readJournalFrames(bytes).size() == 4);
+    check(Calder::readJournalFrames(bytes).size() == 4);
 };
 
 auto journalBaseOnly = test("Journal: frameless journal equals its base") = []
@@ -586,7 +585,7 @@ auto journalBaseOnly = test("Journal: frameless journal equals its base") = []
 auto journalNonMap = test("Journal: non-map target reads the base alone") = []
 {
     auto base = toBinaryJournal(Inner {42});
-    auto keyTable = Binary::readJournalKeyTable(base);
+    auto keyTable = Calder::readJournalKeyTable(base);
     auto bytes = concatenateBuffers(
         {base, binaryJournalSet("x", Inner {1}, keyTable).value()});
 
@@ -596,7 +595,7 @@ auto journalNonMap = test("Journal: non-map target reads the base alone") = []
 auto journalTornTail = test("Journal: torn tail drops only incomplete frames") = []
 {
     auto base = toBinaryJournal(ProfileMap {{"a", {1}}});
-    auto keyTable = Binary::readJournalKeyTable(base);
+    auto keyTable = Calder::readJournalKeyTable(base);
     auto intact = concatenateBuffers({
         base,
         binaryJournalSet("b", Inner {2}, keyTable).value(),
@@ -609,7 +608,7 @@ auto journalTornTail = test("Journal: torn tail drops only incomplete frames") =
     // entries must survive, "c" must only appear when fully written.
     for (auto cut = intact.size(); cut <= full.size(); ++cut)
     {
-        auto torn = Binary::Buffer(full.begin(),
+        auto torn = Calder::Buffer(full.begin(),
                                    full.begin() + static_cast<std::ptrdiff_t>(cut));
         auto loaded = createFromBinary<ProfileMap>(torn);
 
@@ -617,7 +616,7 @@ auto journalTornTail = test("Journal: torn tail drops only incomplete frames") =
         check(loaded["b"].x == 2);
         check(loaded.count("c") == (cut == full.size() ? 1U : 0U));
 
-        auto info = Binary::inspectJournal(torn);
+        auto info = Calder::inspectJournal(torn);
         check(info.valid);
         check(info.truncated == (cut != intact.size() && cut != full.size()));
     }
@@ -627,7 +626,7 @@ auto journalCorruptFrame =
     test("Journal: a corrupt frame is skipped and counted") = []
 {
     auto base = toBinaryJournal(ProfileMap {{"a", {1}}});
-    auto keyTable = Binary::readJournalKeyTable(base);
+    auto keyTable = Calder::readJournalKeyTable(base);
     auto setB = binaryJournalSet("b", Inner {2}, keyTable).value();
     auto setC = binaryJournalSet("c", Inner {3}, keyTable).value();
     auto bytes = concatenateBuffers({base, setB, setC});
@@ -644,7 +643,7 @@ auto journalCorruptFrame =
     check(report.skippedJournalFrameCount == 1);
     check(!report.isJournalTruncated);
 
-    auto info = Binary::inspectJournal(bytes);
+    auto info = Calder::inspectJournal(bytes);
     check(info.skippedFrameCount == 1);
     check(!info.truncated);
     check(info.frameBytes == setB.size() + setC.size());
@@ -655,7 +654,7 @@ auto journalWholeDocumentFrame =
 {
     auto base = toBinaryJournal(ProfileMap {{"a", {1}}});
     auto frameWithDocument =
-        Binary::makeFrame(Binary::FrameKind::Set, "b", toBinary(Inner {2}));
+        Calder::makeFrame(Calder::FrameKind::Set, "b", toBinary(Inner {2}));
 
     auto loaded = ProfileMap {};
     auto report = fromBinary(loaded, concatenateBuffers({base, frameWithDocument}));
@@ -667,7 +666,7 @@ auto journalTornTailReport =
     test("Journal: a torn tail is reported, not counted as skipped") = []
 {
     auto base = toBinaryJournal(ProfileMap {{"a", {1}}});
-    auto keyTable = Binary::readJournalKeyTable(base);
+    auto keyTable = Calder::readJournalKeyTable(base);
     auto bytes = concatenateBuffers({
         base,
         binaryJournalSet("b", Inner {2}, keyTable).value(),
@@ -684,10 +683,10 @@ auto journalTornTailReport =
 
 auto journalGarbage = test("Journal: garbage input is rejected calmly") = []
 {
-    check(!Binary::inspectJournal({}).valid);
+    check(!Calder::inspectJournal({}).valid);
 
-    auto junk = Binary::Buffer {'M', 'I', 'B', 'J', 0xFF, 0xFF, 0xFF, 0xFF};
-    check(!Binary::inspectJournal(junk).valid);
+    auto junk = Calder::Buffer {'M', 'I', 'B', 'J', 0xFF, 0xFF, 0xFF, 0xFF};
+    check(!Calder::inspectJournal(junk).valid);
     check(createFromBinary<ProfileMap>(junk).empty());
 };
 
@@ -747,7 +746,7 @@ auto binaryOmittableAbsent = test("Binary: disengaged Omittable leaves no key") 
     patch.after = 9;
 
     auto bytes = toBinary(patch);
-    auto doc = Binary::Document {bytes};
+    auto doc = Calder::Document {bytes};
     check(doc.isValid());
     check(!doc.root()["name"].isValid());
     check(!doc.root()["inner"].isValid());

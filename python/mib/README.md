@@ -1,6 +1,6 @@
 # mib
 
-A pure-Python 3 (standard library only) decoder for emberstore's binary files: `MIB1` documents and `MIBJ` journals. It turns a file into JSON.
+A pure-Python 3 (standard library only) decoder for Calder files: `MIB1` documents and `MIBJ` journals. It turns a file into JSON.
 
 It was written from `docs/binary-format-spec.md` alone, without reading the C++ code, to show that the format can be implemented from its spec.
 

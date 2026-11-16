@@ -12,7 +12,7 @@
 //   keeps its prior value: no wraparound, no out-of-range casts.
 // - Truncated or corrupted bytes never crash or read out of bounds.
 
-#include <emberstore/Binary.h>
+#include <Calder/Calder.h>
 #include <Miro/Reflect.h>
 #include <Miro/Xml.h>
 
@@ -28,7 +28,7 @@
 
 using namespace nano;
 using namespace Miro;
-using namespace emberstore;
+using namespace Calder;
 
 namespace
 {
@@ -478,9 +478,9 @@ auto packedNarrowing = test(
 
 // --- Journal form ---
 
-auto Bytes = [](std::initializer_list<Binary::Buffer> parts)
+auto Bytes = [](std::initializer_list<Calder::Buffer> parts)
 {
-    auto out = Binary::Buffer {};
+    auto out = Calder::Buffer {};
 
     for (const auto& part: parts)
         out.insert(out.end(), part.begin(), part.end());
@@ -497,7 +497,7 @@ auto journalEvolved =
     };
 
     auto journal = toBinaryJournal(base);
-    auto keyTable = Binary::readJournalKeyTable(journal);
+    auto keyTable = Calder::readJournalKeyTable(journal);
     auto bytes = Bytes({
         journal,
         binaryJournalSet("c", ProfileV1 {.field1 = 3, .field2 = "three"}, keyTable)
@@ -522,7 +522,7 @@ auto journalMixed =
     auto base =
         std::map<std::string, ProfileV1> {{"a", {.field1 = 1, .field2 = "one"}}};
     auto journal = toBinaryJournal(base);
-    auto keyTable = Binary::readJournalKeyTable(journal);
+    auto keyTable = Calder::readJournalKeyTable(journal);
     auto valueV2 = AddedV2 {.field1 = 2, .field2 = "two", .added = 7};
 
     check(!binaryJournalSet("b", valueV2, keyTable).has_value());
@@ -534,7 +534,7 @@ auto journalMixed =
 
     // Compaction: re-encode as a fresh V2 journal, whose table has V2's names.
     auto compacted = toBinaryJournal(loaded);
-    auto compactedKeyTable = Binary::readJournalKeyTable(compacted);
+    auto compactedKeyTable = Calder::readJournalKeyTable(compacted);
     auto frame = binaryJournalSet("c", valueV2, compactedKeyTable);
     check(frame.has_value());
 
@@ -572,7 +572,7 @@ auto truncatedJournal =
     auto base =
         std::map<std::string, ProfileV1> {{"a", {.field1 = 1, .field2 = "one"}}};
     auto journal = toBinaryJournal(base);
-    auto keyTable = Binary::readJournalKeyTable(journal);
+    auto keyTable = Calder::readJournalKeyTable(journal);
     auto bytes = Bytes({
         journal,
         binaryJournalSet("b", ProfileV1 {.field1 = 2, .field2 = "two"}, keyTable)
@@ -606,8 +606,8 @@ auto corruptedBinary =
               std::uint8_t {0x7F},
               std::uint8_t {0x80},
               static_cast<std::uint8_t>(bytes[i] ^ 0x01),
-              std::uint8_t {static_cast<std::uint8_t>(Binary::Tag::Array)},
-              std::uint8_t {static_cast<std::uint8_t>(Binary::Tag::PackedDouble)}})
+              std::uint8_t {static_cast<std::uint8_t>(Calder::Tag::Array)},
+              std::uint8_t {static_cast<std::uint8_t>(Calder::Tag::PackedDouble)}})
         {
             auto damaged = bytes;
             damaged[i] = replacement;

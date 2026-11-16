@@ -1,6 +1,6 @@
 #include "TestTypes.h"
 
-#include <emberstore/Binary.h>
+#include <Calder/Calder.h>
 
 #include <NanoTest/NanoTest.h>
 
@@ -11,7 +11,7 @@
 
 using namespace nano;
 using namespace Miro;
-using namespace emberstore;
+using namespace Calder;
 
 namespace
 {
@@ -21,14 +21,14 @@ using Bytes = std::vector<std::uint8_t>;
 template <typename T>
 Bytes encodeToBytes(T value)
 {
-    auto encoded = Binary::Detail::encodeLittleEndian(value);
+    auto encoded = Calder::Detail::encodeLittleEndian(value);
     return {encoded.begin(), encoded.end()};
 }
 
 template <typename T>
 T decodeFromBytes(const Bytes& bytes)
 {
-    return Binary::Detail::decodeLittleEndian<T>(
+    return Calder::Detail::decodeLittleEndian<T>(
         std::span<const std::uint8_t> {bytes}.first<sizeof(T)>());
 }
 
@@ -42,7 +42,7 @@ template <typename T>
 Bytes encodeElementsOneByOne(std::span<const T> values)
 {
     auto out = Bytes {};
-    Binary::Detail::appendLittleEndianElementsOneByOne(out, values);
+    Calder::Detail::appendLittleEndianElementsOneByOne(out, values);
     return out;
 }
 
@@ -50,7 +50,7 @@ template <typename T>
 Bytes encodeElementsInBulk(std::span<const T> values)
 {
     auto out = Bytes {};
-    Binary::Detail::appendLittleEndianElements(out, values);
+    Calder::Detail::appendLittleEndianElements(out, values);
     return out;
 }
 
@@ -166,7 +166,7 @@ auto littleEndianDocuments =
           == Bytes {0x4D, 0x49, 0x42, 0x31, 0x14, 0x00, 0x00, 0x00, 0x0C, 0x07, 0x00,
                     0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x02, 0x04, 0x06, 0x00});
 
-    auto emptyKeyTable = Binary::InternedKeyTable {};
+    auto emptyKeyTable = Calder::InternedKeyTable {};
     check(binaryJournalSet("b", 2, emptyKeyTable)
           == Bytes {0x01,
                     0x04,
@@ -187,7 +187,7 @@ auto journalFrameUsesBaseKeyIds =
     test("Binary: a journal set frame's value is bare, its key ids the base's") = []
 {
     auto journal = toBinaryJournal(std::map<std::string, Inner> {{"a", {1}}});
-    auto keyTable = Binary::readJournalKeyTable(journal);
+    auto keyTable = Calder::readJournalKeyTable(journal);
 
     check(keyTable.getKeyCount() == 1);
     check(binaryJournalSet("b", Inner {2}, keyTable)
@@ -225,9 +225,9 @@ auto littleEndianBulkMatchesOneByOne =
 
     auto floatsBack = std::vector<float>(floats.size());
     auto doublesBack = std::vector<double>(doubles.size());
-    Binary::Detail::decodeLittleEndianElements(floatsOneByOne,
+    Calder::Detail::decodeLittleEndianElements(floatsOneByOne,
                                                std::span {floatsBack});
-    Binary::Detail::decodeLittleEndianElementsOneByOne(doublesOneByOne,
+    Calder::Detail::decodeLittleEndianElementsOneByOne(doublesOneByOne,
                                                        std::span {doublesBack});
     check(floatsBack == floats);
     check(doublesBack == doubles);
@@ -279,8 +279,8 @@ auto cleanLoadHasNoReport =
 auto documentSizeLimit =
     test("Binary: a document over 4 GiB is refused, not written") = []
 {
-    using Binary::Detail::convertToStoredSize;
-    using Binary::Detail::largestStoredSize;
+    using Calder::Detail::convertToStoredSize;
+    using Calder::Detail::largestStoredSize;
 
     check(convertToStoredSize(largestStoredSize) == largestStoredSize);
 

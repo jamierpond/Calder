@@ -12,7 +12,7 @@
 // shifts below produce that order on any host; whole arrays are copied
 // in one go only when the host is little-endian too.
 
-namespace emberstore::Binary::Detail
+namespace Calder::Detail
 {
 
 template <typename T>
@@ -127,4 +127,4 @@ void decodeLittleEndianElements(std::span<const std::uint8_t> bytes,
         decodeLittleEndianElementsOneByOne(bytes, dest);
 }
 
-} // namespace emberstore::Binary::Detail
+} // namespace Calder::Detail

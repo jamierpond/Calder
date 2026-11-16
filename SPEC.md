@@ -1,10 +1,9 @@
 # Calder binary format: specification
 
-Calder was developed inside emberstore, whose encoder (`emberstore/Binary`) is
-the reference implementation; the text below still names it where it describes
-that encoder.
+Calder was developed inside emberstore, a document store that still writes it;
+the reference encoder now lives in this repository (`Calder/`).
 
-This document describes emberstore's binary files well enough to write a
+This document describes Calder files well enough to write a
 decoder for them in any language, without reading the C++ code. A decoder
 written from it turns any file into a generic tree with JSON's shapes:
 objects with named fields, arrays, strings, numbers, booleans and null.
@@ -19,8 +18,8 @@ There are two kinds of file:
 emberstore stores these in files ending `.ember`. A stored file that starts
 with neither `MIB1` nor `MIBJ` is JSON text, not this format.
 
-The rules below are what the encoder in `emberstore/Binary` writes today
-(branch `jp/binary`, November 2026). Where the C++ reader accepts more than
+The rules below are what the encoder in `Calder/` writes today (November
+2026). Where the C++ reader accepts more than
 this spec allows, section 9 says so.
 
 Contents:
@@ -843,8 +842,8 @@ the JSON view, which merges both (section 5.5).
 
 ## 11. Worked examples
 
-All bytes below were produced by the real encoder (`emberstore::toBinary`,
-built from the `jp/binary` working tree with Miro at
+All bytes below were produced by the real encoder (`toBinary`, while it still
+lived in emberstore's `jp/binary` working tree, with Miro at
 `jamierpond/Miro@e1029443`) and labelled with the ByteLayout annotator
 (`Apps/ByteLayout`). Offsets are decimal. "Tree" is the JSON-shaped tree a
 decoder must produce; the C++ generic decode (section 12) gives the same.
@@ -1098,7 +1097,7 @@ Tree:
 ## 12. Checking a decoder against the C++ code
 
 The C++ code already has a generic decoder: loading any document into a
-`Miro::JSON` value (`emberstore::fromBinary(json, bytes)`) walks it without
+`Miro::JSON` value (`Calder::fromBinary(json, bytes)`) walks it without
 knowing the type that wrote it, and `Miro::Json::print` turns that into JSON
 text. When comparing another decoder's output with it, account for how that
 text is printed:

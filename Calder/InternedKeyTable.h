@@ -8,7 +8,7 @@
 #include <string_view>
 #include <vector>
 
-namespace emberstore::Binary
+namespace Calder
 {
 
 // Gives each distinct object key a small id, numbered in first-seen order.
@@ -149,4 +149,4 @@ private:
     StringKeyedMap<std::uint32_t> keyIdsByName;
 };
 
-} // namespace emberstore::Binary
+} // namespace Calder

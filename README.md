@@ -19,7 +19,34 @@ cd python && python3 -m mib some-file.mib     # prints the file as JSON
 python3 -m unittest mib.test_mib              # the decoder's tests
 ```
 
-The C++ encoder lives in emberstore (`emberstore/Binary`) and reflects plain
-structs through [Miro](https://github.com/eyalamirmusic/Miro). Files start
+The C++ encoder and decoder are in [`Calder/`](Calder) and reflect plain
+structs through [Miro](https://github.com/eyalamirmusic/Miro):
+
+```cpp
+#include <Calder/Calder.h>
+
+struct Point
+{
+    MIRO_REFLECT(x, y)
+
+    double x = 0.0;
+    double y = 0.0;
+};
+
+auto bytes = Calder::toBinary(Point {1.0, 2.0});
+auto point = Calder::createFromBinary<Point>(bytes);
+```
+
+Build and test with CMake (Miro and the test framework are fetched by
+[CPM](https://github.com/cpm-cmake/CPM.cmake)):
+
+```sh
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build && ctest --test-dir build
+```
+
+Use it from another CMake project with
+`CPMAddPackage(NAME Calder GITHUB_REPOSITORY jamierpond/Calder GIT_TAG <sha>)`
+and link `calder`. Files start
 with the magic `MIB1` (a document) or `MIBJ` (a journal); the magic will follow
 the name in a later version.
