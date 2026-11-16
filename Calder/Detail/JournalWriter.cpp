@@ -22,9 +22,8 @@ std::unique_ptr<JournalWriterState>
 
     if (bytes)
         state->openExisting(bytes->getBytes());
-    else if (std::filesystem::exists(journal))
-        state->status = LoadStatus::FileMissing;
-    else if (!state->replaceJournal(
+    else if (std::filesystem::exists(journal)
+             || !state->replaceJournal(
                  makeJournal(writeDocument(std::map<std::string, int> {}))))
         state->status = LoadStatus::FileMissing;
 

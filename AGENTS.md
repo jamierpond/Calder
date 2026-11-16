@@ -8,3 +8,6 @@ before committing.
 The spec is the source of truth. Any change to the format updates `SPEC.md`
 and the Python decoder in the same commit, and the decoder is written from the
 spec, not from the C++ encoder.
+
+Code is clean against `.clang-tidy`, the same config as eacp. Run it on
+every file you add or change.

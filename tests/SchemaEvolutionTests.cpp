@@ -25,6 +25,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace nano;
@@ -307,9 +308,9 @@ struct SingleFieldHolder
 
 // Writes SingleFieldHolder<From>{from}, reads SingleFieldHolder<To> starting from `prior`.
 template <typename To, typename From, typename Expect>
-void checkFieldTypeChange(From from, To prior, Expect expect)
+void checkFieldTypeChange(From from, const To& prior, Expect expect)
 {
-    auto written = SingleFieldHolder<From> {from, 77};
+    auto written = SingleFieldHolder<From> {std::move(from), 77};
 
     {
         auto loaded = SingleFieldHolder<To> {prior, 0};

@@ -6,6 +6,7 @@
 #include <NanoTest/NanoTest.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -401,8 +402,9 @@ auto corruptRecordsNeverCrash = test(
 
     for (auto length = std::size_t {0}; length < bytes.size(); ++length)
     {
+        auto lengthAsOffset = static_cast<std::ptrdiff_t>(length);
         auto truncated =
-            Calder::Detail::Buffer(bytes.begin(), bytes.begin() + length);
+            Calder::Detail::Buffer(bytes.begin(), bytes.begin() + lengthAsOffset);
         loadIgnoringProblems<Track>(truncated);
         loadIgnoringProblems<NamedTrack>(truncated);
         loadIgnoringProblems<JSON>(truncated);

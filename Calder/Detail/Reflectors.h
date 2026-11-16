@@ -3,6 +3,7 @@
 #include "Wire.h"
 #include <Miro/Reflection/Reflector.h>
 
+#include <exception>
 #include <functional>
 #include <optional>
 #include <string>
@@ -90,7 +91,7 @@ private:
 // The Python decoder uses the same limit.
 inline constexpr auto maxNestingDepth = std::size_t {256};
 
-struct NestingTooDeep
+struct NestingTooDeep : std::exception
 {
 };
 
